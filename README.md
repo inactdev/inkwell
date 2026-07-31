@@ -44,8 +44,9 @@ segment, so capture needs both, and declining either leaves nothing to capture w
 the words hands over the keyboard, so they can be typed or corrected by hand from there.
 
 Test suites: `InkwellTests` (the audio spike proof, plus the capture state-machine regressions -
-duplicate inklings, a failed save, an interrupted segment) and `InkwellUITests` (the capture flow
-and the offline-then-sync scenario, driven through the real UI). Run via Xcode's Test navigator or
+duplicate inklings, a failed save, interrupted segments) and `InkwellUITests` (the capture flow,
+the offline-then-sync scenario, and a long dictation staying scrollable on screen, driven through
+the real UI). Run via Xcode's Test navigator or
 `xcodebuild test -only-testing:<TargetName>/<ClassName>`.
 
 ## Why Go for the backend
