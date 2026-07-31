@@ -206,12 +206,16 @@ case "$cmd" in
     # group, so compose gets SIGINT directly *and* this trap sends it a
     # second, different signal (SIGTERM) moments later - two signals where
     # the old `exec` form delivered exactly one. Verified this doesn't
-    # escalate compose's "press Ctrl+C again to force" behavior: that
-    # escalation is keyed to a second SIGINT specifically, not any second
-    # signal - confirmed with docker compose v5.0.1 by comparing a
-    # single-SIGINT stop against a SIGINT-immediately-followed-by-SIGTERM
-    # stop against a container with a 6s SIGTERM trap; both ran the full
-    # grace period and exited identically. Safe as written.
+    # escalate compose's "press Ctrl+C again to force" behavior: docker
+    # compose v5.0.1 counts SIGINT and SIGTERM into one shared counter and
+    # forcefully exits on the third signal of either type ("got 3
+    # SIGTERM/SIGINTs, forcefully exiting"). It is not keyed to a second
+    # SIGINT specifically - a second SIGINT does not escalate, and a
+    # second signal of another type still counts toward the three. Two
+    # signals is under that threshold either way. Confirmed against a
+    # container with a 6s SIGTERM trap: INT, INT+INT and INT+TERM each ran
+    # the full grace period, while INT+TERM+TERM and INT+INT+INT both cut
+    # it short. Safe as written - but a third signal here would not be.
     docker compose up --build "$@" &
     compose_pid=$!
     trap 'trap - INT TERM; kill "$compose_pid" 2>/dev/null || true; wait "$compose_pid" 2>/dev/null || true; exit 130' INT TERM
