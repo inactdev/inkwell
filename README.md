@@ -40,8 +40,8 @@ Build and run on an iPhone 16 simulator (Product > Run, or `xcodebuild ... -dest
 which reaches the Mac's own backend directly from the simulator - override with the
 `INKWELL_BACKEND_URL` environment variable if you're running the backend elsewhere. Grant
 microphone and speech recognition access when prompted - tapping the well starts a dictation
-segment, so capture needs both. Tapping the words hands over the keyboard, so they can be typed
-or corrected by hand from there.
+segment, so capture needs both, and declining either leaves nothing to capture with. Tapping
+the words hands over the keyboard, so they can be typed or corrected by hand from there.
 
 Test suites: `InkwellTests` (the audio spike proof, plus the capture state-machine regressions -
 duplicate inklings, a failed save, an interrupted segment) and `InkwellUITests` (the capture flow
