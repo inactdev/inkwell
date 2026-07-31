@@ -132,6 +132,25 @@ final class CaptureViewModelTests: XCTestCase {
         try await waitUntil(timeout: 2) { viewModel.isListening }
     }
 
+    /// An interruption a moment after tapping the well, before any words
+    /// were heard, must not strand the owner in an empty editor with the
+    /// keyboard up - there is nothing there to edit.
+    func testInterruptionBeforeAnyWordsReturnsToIdle() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+
+        engine.interrupt()
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+
+        XCTAssertEqual(viewModel.mode, .idle, "an interruption with nothing captured must return to idle, not editing")
+        XCTAssertFalse(viewModel.hasContent)
+        XCTAssertEqual(store.inklings.count, 0, "nothing was said, so nothing should be saved")
+    }
+
     private func makeStore() throws -> InklingStore {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CaptureViewModelTests-\(UUID().uuidString)", isDirectory: true)

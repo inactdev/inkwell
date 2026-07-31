@@ -58,11 +58,20 @@ final class CaptureViewModel {
     /// The system took the audio session mid-segment (a call, Siri, an
     /// alarm). Nothing further will arrive, so fold what was heard into the
     /// draft and hand it to the keyboard rather than leaving the well
-    /// rippling at a microphone that is no longer ours.
+    /// rippling at a microphone that is no longer ours. Delegates to
+    /// beginEditing() rather than duplicating its commit-then-stop-then-mode
+    /// sequence, so this never has to assume the engine already tore itself
+    /// down before calling in - stopCapturing() is idempotent, so calling it
+    /// again here is harmless.
     private func captureWasInterrupted() {
         guard mode == .listening else { return }
-        commitLiveTranscript()
-        mode = .editing
+        beginEditing()
+        // Nothing was actually heard - an interruption a moment after
+        // tapping the well shouldn't strand the owner in an empty editor
+        // with the keyboard up over words that were never said.
+        if !hasContent {
+            discardDraft()
+        }
     }
 
     /// Tapping the well: start listening from idle/editing, or - while

@@ -6,10 +6,18 @@ struct CaptureView: View {
     let unsyncedCount: Int
     let onShowList: () -> Void
 
+    private static let transcriptBottomID = "transcriptBottom"
+
     init(store: InklingStore, unsyncedCount: Int, onShowList: @escaping () -> Void) {
         _viewModel = State(initialValue: CaptureViewModel(store: store))
         self.unsyncedCount = unsyncedCount
         self.onShowList = onShowList
+    }
+
+    /// Full size at rest; shrunk once engaged so the transcript - the thing
+    /// that actually needs the room - gets most of what the well gives up.
+    private var inkwellScale: CGFloat {
+        viewModel.mode == .idle ? 1 : 0.5
     }
 
     var body: some View {
@@ -30,18 +38,56 @@ struct CaptureView: View {
                 VStack(spacing: 0) {
                     header
 
-                    Spacer()
+                    // Bounded to whatever room is actually left, then
+                    // scrollable within that - the well shrinking while
+                    // engaged buys back most of it, but rambling for a while
+                    // (the whole point of this screen) can still out-grow
+                    // any fixed height, on any device. Without this, the
+                    // words the owner just said scroll off the bottom of the
+                    // screen with no way to see them - unacceptable for a
+                    // tool whose entire job is not losing what he says.
+                    GeometryReader { proxy in
+                        ScrollViewReader { scrollProxy in
+                            ScrollView {
+                                VStack(spacing: 0) {
+                                    Spacer(minLength: 8)
 
-                    InkwellView(isRecording: viewModel.isListening, inputLevel: viewModel.inputLevel)
-                        .onTapGesture { viewModel.tapInkwell() }
-                        .accessibilityLabel(viewModel.isListening ? "Stop and edit" : "Start capturing")
-                        .accessibilityIdentifier("inkwell")
+                                    InkwellView(isRecording: viewModel.isListening, inputLevel: viewModel.inputLevel)
+                                        .scaleEffect(inkwellScale)
+                                        .frame(width: 260 * inkwellScale, height: 260 * inkwellScale)
+                                        .animation(.easeInOut(duration: 0.25), value: inkwellScale)
+                                        .onTapGesture { viewModel.tapInkwell() }
+                                        .accessibilityLabel(viewModel.isListening ? "Stop and edit" : "Start capturing")
+                                        .accessibilityIdentifier("inkwell")
 
-                    promptOrTranscript
-                        .padding(.top, 28)
-                        .padding(.horizontal, 28)
+                                    promptOrTranscript
+                                        .padding(.top, 28)
+                                        .padding(.horizontal, 28)
+                                        .id(Self.transcriptBottomID)
 
-                    Spacer()
+                                    Spacer(minLength: 8)
+                                }
+                                .frame(minHeight: proxy.size.height)
+                            }
+                            .onChange(of: viewModel.displayedText) {
+                                guard viewModel.isListening else { return }
+                                withAnimation(.easeOut(duration: 0.15)) {
+                                    scrollProxy.scrollTo(Self.transcriptBottomID, anchor: .bottom)
+                                }
+                            }
+                            // Resuming dictation onto a long already-committed
+                            // draft doesn't change displayedText's value by
+                            // itself (engine.transcript starts fresh at ""),
+                            // so the onChange above never fires - without
+                            // this, the view sits wherever it last scrolled
+                            // to (mid-editor) instead of showing where new
+                            // words are about to appear.
+                            .onChange(of: viewModel.mode) {
+                                guard viewModel.isListening else { return }
+                                scrollProxy.scrollTo(Self.transcriptBottomID, anchor: .bottom)
+                            }
+                        }
+                    }
 
                     footer
                 }
