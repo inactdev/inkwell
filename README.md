@@ -33,7 +33,9 @@ Regenerates the Xcode project with this worktree's backend URL baked in, ensures
 worktree's simulator (a 1-3GB `simctl clone` the first time), starts the backend in the foreground
 on this worktree's own port and storage, then builds, installs, and launches the app on that
 simulator and brings Simulator.app to the front - Inkwell ends up on screen, ready to tap, with no
-further steps. `./dev.sh info` prints exactly what got derived; Ctrl-C or `./dev.sh down` stops it.
+further steps. `./dev.sh info` prints exactly what got derived. Ctrl-C stops the backend and leaves
+this worktree's simulator booted with the app still on it; `./dev.sh down` stops the backend *and*
+deletes that simulator and its DerivedData, which is what reclaims the 1-3GB a clone costs.
 The iOS half is best-effort: without Xcode/xcodegen it says so and brings up the backend alone.
 `go run .` from `backend/` (see `backend/README.md`) still works for quick backend-only iteration,
 just without the isolation - fine for a single lane, not for running two at once.

@@ -34,21 +34,70 @@ cd "$INKWELL_WORKTREE"
 # actually answering yet. Bounded generously rather than tightly: the very
 # first run pulls a base image and builds the backend image, which routinely
 # takes minutes. What keeps that from being a long stall when something is
-# actually wrong is watching the compose process itself - if it's gone, the
-# backend is never arriving and there's nothing left to wait for.
+# actually wrong is the liveness check the caller passes in ("$@", run as a
+# command) - once it says the backend is gone, it's never arriving and
+# there's nothing left to wait for.
+#
+# The bound is wall-clock, not attempts: an attempt costs anything from
+# instant to the curl timeouts above, so counting them would let the real
+# wait run many times longer than the number the give-up message reports.
 inkwell_wait_for_backend() {
-  local compose_pid=$1 tries=0
-  while [ "$tries" -lt 600 ]; do
+  local start=$SECONDS elapsed=0
+  local -a is_alive=("$@")
+  while [ "$elapsed" -lt 600 ]; do
     curl -fsS --connect-timeout 2 --max-time 5 -o /dev/null "$INKWELL_BACKEND_URL/inklings" 2>/dev/null && return 0
-    if ! kill -0 "$compose_pid" 2>/dev/null; then
+    if ! "${is_alive[@]}"; then
       echo "inkwell: the backend exited before it became reachable" >&2
       return 1
     fi
-    tries=$((tries + 1))
     sleep 1
+    elapsed=$((SECONDS - start))
   done
-  echo "inkwell: gave up waiting for the backend after ${tries}s" >&2
+  echo "inkwell: gave up waiting for the backend after ${elapsed}s" >&2
   return 1
+}
+
+# The two liveness checks a caller can pass. Which one is right depends on
+# how compose was started: the foreground form has a compose process of its
+# own to watch, while the detached form's compose has already exited on
+# purpose, so the containers themselves are all that's left to ask.
+inkwell_compose_pid_alive() {
+  kill -0 "$1" 2>/dev/null
+}
+
+inkwell_compose_containers_alive() {
+  [ -n "$(docker compose ps --status running --status restarting --quiet 2>/dev/null)" ]
+}
+
+# `-d`/`--detach` (and `--wait`, which implies it) are compose's flags, not
+# this script's, so they arrive inside the passthrough args - and they change
+# the shape of everything after them: compose returns as soon as the
+# containers are up instead of staying in the foreground, so there is no
+# process to background, signal, or wait on.
+inkwell_args_request_detach() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --) return 1 ;;
+      --detach|--detach=true|--detach=1|--wait) return 0 ;;
+      -[!-]*)
+        case "$arg" in
+          *d*) return 0 ;;
+        esac
+        ;;
+    esac
+  done
+  return 1
+}
+
+inkwell_launch_when_backend_ready() {
+  local udid=$1
+  shift
+  if inkwell_wait_for_backend "$@"; then
+    inkwell_build_install_launch "$udid" || true
+  else
+    echo "inkwell: backend not reachable - skipping app build, install, and launch" >&2
+  fi
 }
 
 # Builds (incrementally - xcodebuild itself skips work that's already up to
@@ -82,10 +131,12 @@ inkwell_build_install_launch() {
     echo "inkwell: installing Inkwell on $INKWELL_SIM_NAME failed - not launching" >&2
     return 1
   fi
-  open -a Simulator || true
-  # --terminate-running-process, or a copy left running by an earlier ./dev.sh
-  # is merely brought to the front: the bundle on disk would be the build just
-  # installed while the pixels on screen are still the previous one.
+  # -CurrentDeviceUDID, or the window that comes forward is whichever device
+  # was last active - another worktree's, when two lanes are running.
+  open -a Simulator --args -CurrentDeviceUDID "$udid" || true
+  # Without --terminate-running-process, a copy left running by an earlier
+  # ./dev.sh is merely brought to the front: the bundle on disk would be the
+  # build just installed while the pixels on screen are still the previous one.
   if ! xcrun simctl launch --terminate-running-process "$udid" "$INKWELL_BUNDLE_ID" >/dev/null; then
     echo "inkwell: launching Inkwell on $INKWELL_SIM_NAME failed" >&2
     return 1
@@ -119,6 +170,18 @@ case "$cmd" in
       echo "inkwell: xcodegen not found or ios/ missing - skipping the iOS side, backend only" >&2
     fi
 
+    if inkwell_args_request_detach "$@"; then
+      # Nothing to background: compose exits on its own the moment the
+      # containers are up, and they keep running without this script. The app
+      # still gets built, installed, and launched - `up -d` differs in who
+      # holds the backend open, not in what the command is for.
+      docker compose up --build "$@"
+      if [ "$ios_ready" -eq 1 ]; then
+        inkwell_launch_when_backend_ready "$udid" inkwell_compose_containers_alive
+      fi
+      exit 0
+    fi
+
     # Backgrounded rather than exec'd, so there's a point after the backend
     # starts to build/install/launch the app. That costs the plain signal
     # path: bash sets SIGINT to ignored for asynchronous commands in a script,
@@ -144,11 +207,7 @@ case "$cmd" in
     trap 'trap - INT TERM; kill "$compose_pid" 2>/dev/null || true; wait "$compose_pid" 2>/dev/null || true; exit 130' INT TERM
 
     if [ "$ios_ready" -eq 1 ]; then
-      if inkwell_wait_for_backend "$compose_pid"; then
-        inkwell_build_install_launch "$udid" || true
-      else
-        echo "inkwell: backend not reachable - skipping app build, install, and launch" >&2
-      fi
+      inkwell_launch_when_backend_ready "$udid" inkwell_compose_pid_alive "$compose_pid"
     fi
 
     wait "$compose_pid"
