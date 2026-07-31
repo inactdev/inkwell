@@ -76,6 +76,7 @@ backend url     $INKWELL_BACKEND_URL
 storage dir     $INKWELL_STORAGE_DIR
 derived data    $INKWELL_DERIVED_DATA
 simulator name  $INKWELL_SIM_NAME
+test proxy url  $INKWELL_TEST_PROXY_URL
 EOF
     ;;
   ios)

@@ -31,7 +31,7 @@ Regenerates the Xcode project with this worktree's backend URL baked in, ensures
 worktree's simulator (a 1-3GB `simctl clone` the first time), then starts the backend in the
 foreground, on this worktree's own port and storage - no more typing than `go run .` was. The iOS
 half is best-effort: without Xcode/xcodegen it says so and brings up the backend alone.
-`./dev.sh info` prints what got derived; `./dev.sh down` stops it.
+`./dev.sh info` prints exactly what got derived; `./dev.sh down` stops it.
 `go run .` from `backend/` (see `backend/README.md`) still works for quick backend-only iteration,
 just without the isolation - fine for a single lane, not for running two at once.
 
