@@ -186,7 +186,7 @@ OSA
 # app on this worktree's simulator, then brings Simulator.app to the front so
 # it's actually visible rather than booted-but-hidden.
 inkwell_build_install_launch() {
-  local udid=$1 app_path log
+  local udid=$1 app_path log sim_was_running=0
   if ! command -v xcodebuild >/dev/null 2>&1; then
     echo "inkwell: xcodebuild not found - skipping app launch" >&2
     return 1
@@ -212,14 +212,30 @@ inkwell_build_install_launch() {
     echo "inkwell: installing Inkwell on $INKWELL_SIM_NAME failed - not launching" >&2
     return 1
   fi
+  # Which of the two focus cases this run is has to be sampled *before* the
+  # `open` below, and by exact process name: a bare `pgrep Simulator` or a
+  # `pgrep -f Simulator` also matches SimulatorTrampoline and the CoreSimulator
+  # XPC services, which are up whether or not Simulator.app itself is, so
+  # either would report "already running" on every single run.
+  if pgrep -qxU "$(id -u)" Simulator; then
+    sim_was_running=1
+  fi
   # Covers the cold-launch case (Simulator.app not running yet): picks this
   # worktree's device as the one that gets focus when the app starts up.
   # `open -n` does not buy a second Simulator.app instance to sidestep the
   # already-running case below - verified on Xcode 16.4: `-n` returns 0 and no
   # new process appears, so there is always exactly one Simulator.app to aim.
   open -a Simulator --args -CurrentDeviceUDID "$udid" || true
-  # Covers the already-running case: see inkwell_focus_sim_window above.
-  inkwell_focus_sim_window "$INKWELL_SIM_NAME"
+  # Covers the already-running case, and only that one: see
+  # inkwell_focus_sim_window above. A cold launch has already been aimed by
+  # -CurrentDeviceUDID, and Simulator.app answers Apple events before it has
+  # necessarily built a window for each booted device - so asking there would
+  # spend the watchdog's patience on a question whose answer doesn't matter and
+  # could report "no window" on the ordinary single-lane run, which is exactly
+  # the signal that has to stay trustworthy for the real-screen check.
+  if [ "$sim_was_running" -eq 1 ]; then
+    inkwell_focus_sim_window "$INKWELL_SIM_NAME"
+  fi
   # Without --terminate-running-process, a copy left running by an earlier
   # ./dev.sh is merely brought to the front: the bundle on disk would be the
   # build just installed while the pixels on screen are still the previous one.
