@@ -45,14 +45,29 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.inkwell.tests
         GENERATE_INFOPLIST_FILE: YES
 
+  InkwellUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: InkwellUITests
+    dependencies:
+      - target: Inkwell
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.inkwell.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Inkwell
+
 schemes:
   Inkwell:
     build:
       targets:
         Inkwell: all
         InkwellTests: [test]
+        InkwellUITests: [test]
     test:
       targets:
         - InkwellTests
+        - InkwellUITests
     run:
       config: Debug
