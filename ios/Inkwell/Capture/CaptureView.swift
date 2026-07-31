@@ -31,9 +31,8 @@ struct CaptureView: View {
             // pushed the wordmark and tray icon out of the safe area and onto
             // the status bar. Overlaying it on a view that keeps the size it
             // was offered decouples the two: the header stays pinned below
-            // the status bar and the overflow can only run downward, behind
-            // the keyboard, where the toolbar accessory already carries
-            // Discard and Done.
+            // the status bar, the footer stays above the keyboard, and the
+            // transcript in between absorbs whatever room is left.
             Color.clear.overlay(alignment: .top) {
                 VStack(spacing: 0) {
                     header
@@ -164,9 +163,10 @@ struct CaptureView: View {
                     .onAppear { editorFocused = true }
                     .accessibilityIdentifier("transcriptEditor")
                     .toolbar {
-                        // The footer's Done button sits behind the keyboard
-                        // while editing - keep it reachable without forcing
-                        // a keyboard dismissal first.
+                        // Discard and Done within thumb reach of the keys,
+                        // rather than making the owner reach past the
+                        // keyboard for the footer's pair - which stands down
+                        // while these are showing.
                         ToolbarItemGroup(placement: .keyboard) {
                             Button("Discard") {
                                 editorFocused = false
@@ -202,9 +202,17 @@ struct CaptureView: View {
         Binding(get: { viewModel.committedText }, set: { viewModel.updateCommittedText($0) })
     }
 
+    /// The keyboard accessory carries its own Discard and Done while the
+    /// editor holds focus. Now that the column is bounded and the footer
+    /// survives above the keyboard rather than hiding behind it, showing both
+    /// puts two identical control sets a few points apart.
+    private var isEditingWithKeyboard: Bool {
+        viewModel.mode == .editing && editorFocused
+    }
+
     private var footer: some View {
         HStack(spacing: 16) {
-            if viewModel.hasContent {
+            if viewModel.hasContent && !isEditingWithKeyboard {
                 Button("Discard") {
                     editorFocused = false
                     viewModel.discard()
@@ -229,6 +237,7 @@ struct CaptureView: View {
         .padding(.horizontal, 28)
         .frame(height: 44)
         .animation(.easeInOut(duration: 0.2), value: viewModel.hasContent)
+        .animation(.easeInOut(duration: 0.2), value: editorFocused)
     }
 
     private var confirmationToast: some View {

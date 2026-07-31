@@ -132,6 +132,36 @@ final class CaptureViewModelTests: XCTestCase {
         try await waitUntil(timeout: 2) { viewModel.isListening }
     }
 
+    /// The interruption contract: whoever reports the interruption owes no
+    /// promise about having torn the segment down first. The real engine
+    /// happens to stop itself before calling in, but the view model must not
+    /// lean on that - it has to end the segment itself, or a notifier that
+    /// doesn't (an app-lifecycle hook, a future route-change observer) leaves
+    /// the mic live behind an editing screen.
+    func testInterruptionStopsTheEngineEvenWhenItIsStillCapturing() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+        engine.transcript = "Reroute the swim line around the mooring"
+        XCTAssertTrue(engine.isCapturing, "the segment is running - otherwise this proves nothing")
+
+        engine.interruptWithoutStopping()
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+
+        XCTAssertFalse(
+            engine.isCapturing,
+            "the view model must stop the engine itself rather than assume the interruption already did"
+        )
+        XCTAssertEqual(
+            viewModel.committedText, "Reroute the swim line around the mooring",
+            "words heard before the interruption must survive it"
+        )
+        XCTAssertEqual(viewModel.mode, .editing)
+    }
+
     /// An interruption a moment after tapping the well, before any words
     /// were heard, must not strand the owner in an empty editor with the
     /// keyboard up - there is nothing there to edit.
@@ -209,6 +239,12 @@ private final class FakeCaptureEngine: CaptureEngine, @unchecked Sendable {
     /// then tell the owner the segment is over.
     func interrupt() {
         stopCapturing()
+        onInterruption?()
+    }
+
+    /// The same notification from a source that has *not* stopped the engine
+    /// first - nothing in the protocol promises it has.
+    func interruptWithoutStopping() {
         onInterruption?()
     }
 }

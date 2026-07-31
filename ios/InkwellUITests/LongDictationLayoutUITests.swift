@@ -68,8 +68,15 @@ final class LongDictationLayoutUITests: XCTestCase {
 
         // And scrolling back up still finds the well where it should be -
         // nothing about auto-scroll should strand it unreachably off-screen.
-        app.swipeDown()
-        XCTAssertTrue(inkwell.waitForExistence(timeout: 2), "the well must still be reachable by scrolling back up")
+        // Existence proves nothing here: content scrolled out of a SwiftUI
+        // ScrollView stays in the accessibility tree either way, so only
+        // hittability says where the well actually is.
+        var swipesRemaining = 5
+        while !inkwell.isHittable && swipesRemaining > 0 {
+            app.swipeDown()
+            swipesRemaining -= 1
+        }
+        XCTAssertTrue(inkwell.isHittable, "the well must scroll back into view, not be stranded off-screen by auto-scroll")
 
         // Clean up rather than leave a long draft (or save it) behind - the
         // footer's Discard is reachable directly from .listening.
