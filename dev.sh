@@ -7,12 +7,18 @@
 # Usage:
 #   ./dev.sh              start the backend stack (same as `up`)
 #   ./dev.sh up           start the backend stack in the foreground
-#   ./dev.sh down         stop it
+#   ./dev.sh down         stop it, and delete this worktree's simulator+DerivedData
 #   ./dev.sh info         print this worktree's derived port/storage/etc
 #   ./dev.sh ios generate regenerate the Xcode project, backend URL baked in
 #   ./dev.sh ios sim      ensure+boot this worktree's simulator, print its UDID
 #   ./dev.sh ios test     xcodebuild test against this worktree's simulator
 #   ./dev.sh ios build    xcodebuild build against this worktree's simulator
+#   ./dev.sh ios clean    delete this worktree's simulator+DerivedData now
+#
+# A booted per-worktree simulator tears itself down automatically: `down`
+# deletes it, and so does shutting the device down by any other means (a
+# watcher armed at boot notices). `ios clean` is only the backstop for when
+# neither happened.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -31,7 +37,14 @@ case "$cmd" in
     exec docker compose up --build "$@"
     ;;
   down)
-    exec docker compose down "$@"
+    # A cloned simulator costs 1-3GB, so bringing the stack down takes the
+    # worktree's device with it, unconditionally. Runs even if compose failed
+    # (docker not running, say) - the device is still this lane's to reclaim -
+    # while still reporting compose's own exit status.
+    rc=0
+    docker compose down "$@" || rc=$?
+    inkwell_teardown_worktree_sim
+    exit "$rc"
     ;;
   ps|status)
     docker compose ps "$@"
@@ -62,6 +75,9 @@ EOF
         inkwell_boot_sim "$udid"
         echo "$INKWELL_SIM_NAME  $udid"
         ;;
+      clean)
+        inkwell_teardown_worktree_sim
+        ;;
       test|build)
         (cd ios && xcodegen generate)
         udid=$(inkwell_ensure_worktree_sim)
@@ -74,7 +90,7 @@ EOF
           "$@"
         ;;
       *)
-        echo "inkwell: unknown ios subcommand '$sub' (generate|sim|test|build)" >&2
+        echo "inkwell: unknown ios subcommand '$sub' (generate|sim|test|build|clean)" >&2
         exit 1
         ;;
     esac

@@ -70,12 +70,13 @@ registry to update - the worktree's own path *is* the registry key.
 
 ```
 ./dev.sh                start the backend (foreground; Ctrl-C stops it)
-./dev.sh down            stop it
+./dev.sh down            stop it, and delete this worktree's simulator + DerivedData
 ./dev.sh info             print this worktree's derived port/storage/simulator/etc
 ./dev.sh ios generate    regenerate the Xcode project with this worktree's backend URL baked in
 ./dev.sh ios sim          ensure + boot this worktree's simulator, print its UDID
 ./dev.sh ios test         xcodebuild test against this worktree's simulator + DerivedData
 ./dev.sh ios build        xcodebuild build, same isolation
+./dev.sh ios clean        backstop: delete this worktree's simulator + DerivedData now
 ```
 
 `go run .` inside `backend/` still works exactly as before (see `backend/README.md`) - useful for
@@ -114,3 +115,23 @@ every per-worktree clone starts already granted, with no manual step and no risk
 `simctl uninstall` resetting another lane's grants (per AGENTS.md's note that grants reset on
 uninstall even though the identity is nominally per-bundle-id): each worktree's simulator, and
 therefore its TCC state, is entirely its own device.
+
+### ...and it deletes itself again
+
+A clone costs 1-3GB. One per worktree that outlives the lane is a real amount of disk to leak, and
+"remember to run the cleanup command" is the same class of thing as "remember to pick a free port" -
+so teardown is automatic, on two independent triggers:
+
+1. **The stack comes down.** `./dev.sh down` deletes this worktree's simulator and its DerivedData
+   right after taking the compose project down - not behind a flag.
+2. **The device is shut down**, whether or not `dev.sh down` is ever run - quitting Simulator.app,
+   `xcrun simctl shutdown`, shutting it down from the UI. Every path that boots this worktree's
+   simulator also arms `scripts/inkwell-sim-watcher.sh`: a small detached (`nohup`ed, SIGHUP/SIGINT-
+   ignoring) process that polls that one UDID and, the moment it is no longer `Booted`, deletes the
+   device and DerivedData and exits. It survives the `dev.sh` that spawned it, including a Ctrl-C of
+   `dev.sh ios test`, which shares its process group. A pidfile keyed by UDID
+   (`$TMPDIR/inkwell-sim-watcher-<udid>.pid`, claimed atomically via `ln -s` with the watcher's own
+   pid) keeps repeated `dev.sh` runs from stacking up watchers on the same device.
+
+`./dev.sh ios clean` is the manual backstop for when neither fired - a machine crash, a `kill -9`'d
+watcher - and deletes this worktree's simulator (in whatever state) and DerivedData on demand.

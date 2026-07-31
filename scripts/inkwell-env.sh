@@ -263,4 +263,70 @@ inkwell_boot_sim() {
     xcrun simctl boot "$udid" 2>/dev/null || true
     xcrun simctl bootstatus "$udid" -b >/dev/null
   fi
+  inkwell_spawn_sim_watcher "$udid"
+}
+
+# Keyed by UDID rather than by worktree: a worktree that gets a fresh clone
+# gets a fresh watcher, and an entry left over from a device that no longer
+# exists can never suppress the watcher for the one actually running.
+inkwell_sim_watcher_pidfile() {
+  echo "${TMPDIR:-/tmp}/inkwell-sim-watcher-$1.pid"
+}
+
+# Arms the detached watcher that deletes this worktree's simulator once it
+# stops being Booted (see scripts/inkwell-sim-watcher.sh). Called from
+# inkwell_boot_sim rather than from dev.sh's individual subcommands, so every
+# path that boots this worktree's device - now or later - is covered without
+# having to remember to arm it.
+inkwell_spawn_sim_watcher() {
+  local udid=$1 pidfile holder watcher
+  pidfile=$(inkwell_sim_watcher_pidfile "$udid")
+
+  holder=$(readlink "$pidfile" 2>/dev/null) || holder=""
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+    return 0
+  fi
+
+  nohup "$INKWELL_WORKTREE/scripts/inkwell-sim-watcher.sh" \
+    "$udid" "$INKWELL_DERIVED_DATA" "$pidfile" >/dev/null 2>&1 &
+  watcher=$!
+  disown "$watcher" 2>/dev/null || true
+
+  # Claim after the spawn, with the watcher's own pid, so the pidfile is true
+  # the instant it exists: one holding the *launcher's* pid would read as
+  # stale the moment dev.sh exits and every later run would stack another
+  # watcher on top of the live one. `ln -s` fails outright when the path
+  # exists, so of two lanes racing here exactly one publishes a watcher and
+  # the loser kills the one it just started.
+  if ! ln -s "$watcher" "$pidfile" 2>/dev/null; then
+    holder=$(readlink "$pidfile" 2>/dev/null) || holder=""
+    if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+      kill "$watcher" 2>/dev/null || true
+      return 0
+    fi
+    rm -f "$pidfile"
+    ln -s "$watcher" "$pidfile" 2>/dev/null || kill "$watcher" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# Deletes this worktree's simulator whatever state it's in, plus its
+# DerivedData. The manual backstop behind `dev.sh ios clean`, and what
+# `dev.sh down` runs after taking the compose project down. Idempotent, and a
+# no-op when neither exists.
+inkwell_teardown_worktree_sim() {
+  local udid pidfile holder
+  udid=$(inkwell_find_sim_udid "$INKWELL_SIM_NAME") || udid=""
+  if [ -n "$udid" ]; then
+    echo "inkwell: deleting this worktree's simulator ($INKWELL_SIM_NAME)" >&2
+    xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true
+    xcrun simctl delete "$udid" >/dev/null 2>&1 || true
+    pidfile=$(inkwell_sim_watcher_pidfile "$udid")
+    holder=$(readlink "$pidfile" 2>/dev/null) || holder=""
+    if [ -n "$holder" ]; then
+      kill "$holder" 2>/dev/null || true
+    fi
+    rm -f "$pidfile"
+  fi
+  rm -rf "$INKWELL_DERIVED_DATA"
 }

@@ -56,6 +56,10 @@ this worktree, so two worktrees testing at once don't share a device, DerivedDat
 (see `docs/runtime-isolation.md`) - equivalent to Xcode's Test navigator or
 `xcodebuild test -only-testing:<TargetName>/<ClassName>`, minus the collision risk.
 
+That simulator cleans itself up: `./dev.sh down` deletes it, and so does simply shutting the device
+down (quitting Simulator.app, say) even if `down` is never run. `./dev.sh ios clean` deletes it and
+this worktree's DerivedData on demand - the backstop for when neither of those happened.
+
 ## Why Go for the backend
 
 The backend's whole job is: accept a small JSON+audio payload, write markdown, run `git commit`.
