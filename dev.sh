@@ -43,7 +43,7 @@ cd "$INKWELL_WORKTREE"
 # there's nothing left to wait for.
 #
 # The bound is wall-clock, not attempts: an attempt costs anything from
-# instant to the curl timeouts above, so counting them would let the real
+# instant to the curl timeouts below, so counting them would let the real
 # wait run many times longer than the number the give-up message reports.
 inkwell_wait_for_backend() {
   local start=$SECONDS elapsed=0

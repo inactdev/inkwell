@@ -8,7 +8,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `xcodegen generate` / `xcodebuild` directly - it gives the current worktree its own port,
   storage, DerivedData path, and cloned simulator so parallel worktrees can't collide at runtime.
   `./dev.sh` with no arguments ends with the app built, installed, and launched on that simulator,
-  Simulator.app frontmost - not just the environment prepared. See `docs/runtime-isolation.md`.
+  not just the environment prepared. See `docs/runtime-isolation.md`.
 - `ios/Inkwell.xcodeproj` is generated, not committed. Run `./dev.sh ios generate` after pulling or
   after adding/removing source files, before opening it in Xcode - `./dev.sh ios build|test`
   regenerate it themselves first.
