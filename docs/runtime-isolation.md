@@ -84,6 +84,21 @@ and it's the same reason `xcodegen generate` / `xcodebuild` shouldn't be run dir
 lose the per-worktree derivation. `./dev.sh` is the only path that carries it, and it's not more
 typing than what it replaces.
 
+## How the app finds its own backend
+
+`ios/Inkwell/Sync/AppConfig.swift` reads `INKWELL_BACKEND_URL` baked into the app's own
+`Info.plist` at build time (`dev.sh ios generate` sets it as a build setting, resolved into
+Info.plist by Xcode's own `$(VAR)` processing). This is deliberately *not* a scheme-level
+environment variable: `XCUIApplication().launch()` in a UI test does not reliably inherit the
+Xcode scheme's environment variables - only the process that invokes it does - so a UI test's
+app-under-test would otherwise silently fall back to the hardcoded `127.0.0.1:8080` default and
+sync to the wrong (or no) backend. Confirmed by pointing a decoy backend at `8080` and watching a
+UI-test-driven capture land there instead of the real one, with `xcodebuild test` still reporting
+success throughout (the sync failure is swallowed, by design, per `docs/api-contract.md`'s offline
+semantics) - baking the URL into the bundle instead makes it correct regardless of which process
+does the launching. An actual `INKWELL_BACKEND_URL` environment variable still overrides it, for
+pointing a running app at a different backend by hand.
+
 ## The iOS Simulator: one clone per worktree
 
 AGENTS.md documents that granting `speech-recognition` access requires editing `TCC.db` directly -
