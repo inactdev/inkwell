@@ -7,7 +7,8 @@
 # Usage:
 #   ./dev.sh              start everything (same as `up`)
 #   ./dev.sh up           start the backend AND this worktree's simulator,
-#                         Xcode project regenerated to match, in one command
+#                         Xcode project regenerated to match, app built,
+#                         installed, and launched on screen - in one command
 #   ./dev.sh down         stop it, and delete this worktree's simulator+DerivedData
 #   ./dev.sh info         print this worktree's derived port/storage/etc
 #   ./dev.sh ios generate regenerate the Xcode project alone, backend URL baked in
@@ -28,6 +29,52 @@ source scripts/inkwell-env.sh
 inkwell_derive
 cd "$INKWELL_WORKTREE"
 
+# Polls the backend's own healthcheck endpoint (same one docker-compose.yml
+# uses) so the app isn't installed and launched against a backend that isn't
+# actually answering yet.
+inkwell_wait_for_backend() {
+  local tries=0
+  while [ "$tries" -lt 60 ]; do
+    curl -fsS -o /dev/null "$INKWELL_BACKEND_URL/inklings" 2>/dev/null && return 0
+    tries=$((tries + 1))
+    sleep 1
+  done
+  return 1
+}
+
+# Builds (incrementally - xcodebuild itself skips work that's already up to
+# date, so a rerun with nothing changed is fast), installs, and launches the
+# app on this worktree's simulator, then brings Simulator.app to the front so
+# it's actually visible rather than booted-but-hidden.
+inkwell_build_install_launch() {
+  local udid=$1 app_path log
+  if ! command -v xcodebuild >/dev/null 2>&1; then
+    echo "inkwell: xcodebuild not found - skipping app launch" >&2
+    return 1
+  fi
+  echo "inkwell: building Inkwell for the simulator" >&2
+  log="${TMPDIR:-/tmp}/inkwell-build-$INKWELL_PROJECT_NAME.log"
+  if ! xcodebuild build \
+    -project ios/Inkwell.xcodeproj \
+    -scheme Inkwell \
+    -destination "id=$udid" \
+    -derivedDataPath "$INKWELL_DERIVED_DATA" \
+    >"$log" 2>&1; then
+    echo "inkwell: build failed - not installing or launching (see $log)" >&2
+    tail -n 40 "$log" >&2
+    return 1
+  fi
+  app_path="$INKWELL_DERIVED_DATA/Build/Products/Debug-iphonesimulator/Inkwell.app"
+  if [ ! -d "$app_path" ]; then
+    echo "inkwell: built app not found at $app_path - not installing" >&2
+    return 1
+  fi
+  xcrun simctl install "$udid" "$app_path"
+  open -a Simulator
+  xcrun simctl launch "$udid" "$INKWELL_BUNDLE_ID" >/dev/null
+  echo "inkwell: Inkwell launched on $INKWELL_SIM_NAME" >&2
+}
+
 cmd="${1:-up}"
 [ $# -gt 0 ] && shift || true
 
@@ -40,17 +87,38 @@ case "$cmd" in
     # port: both are derived and applied together, every time. Best-effort:
     # a missing Xcode/xcodegen must not stop the backend from starting.
     export INKWELL_BACKEND_URL
+    ios_ready=0
+    udid=""
     if command -v xcodegen >/dev/null 2>&1 && [ -d ios ]; then
       if inkwell_regenerate_ios_project && udid=$(inkwell_ensure_worktree_sim); then
         inkwell_boot_sim "$udid"
         echo "inkwell: simulator $INKWELL_SIM_NAME ($udid) ready"
+        ios_ready=1
       else
         echo "inkwell: could not prepare the iOS side - continuing, the backend still starts" >&2
       fi
     else
       echo "inkwell: xcodegen not found or ios/ missing - skipping the iOS side, backend only" >&2
     fi
-    exec docker compose up --build "$@"
+
+    # Backgrounded rather than exec'd, so there's a point after the backend
+    # starts to build/install/launch the app - but still in the same process
+    # group as this script, so a Ctrl-C at the terminal reaches it directly
+    # exactly as it did when this was exec'd. The trap is belt-and-suspenders
+    # for invocations where that isn't true (e.g. run via another wrapper).
+    docker compose up --build "$@" &
+    compose_pid=$!
+    trap 'kill "$compose_pid" 2>/dev/null || true' INT TERM
+
+    if [ "$ios_ready" -eq 1 ]; then
+      if inkwell_wait_for_backend; then
+        inkwell_build_install_launch "$udid" || true
+      else
+        echo "inkwell: backend did not become reachable - skipping app launch" >&2
+      fi
+    fi
+
+    wait "$compose_pid"
     ;;
   down)
     # A cloned simulator costs 1-3GB, so bringing the stack down takes the
@@ -110,7 +178,9 @@ EOF
           # app's captures (and nothing else - not TCC, not the backend's
           # storage) keeps the window the test's to spend.
           container=$(xcrun simctl get_app_container "$udid" "$INKWELL_BUNDLE_ID" data 2>/dev/null) || container=""
-          if [ -n "$container" ]; then
+          if [ -n "$container" ] && [ -d "$container/Documents/Inklings" ]; then
+            capture_count=$(find "$container/Documents/Inklings" -type f | wc -l | tr -d ' ')
+            echo "inkwell: clearing $capture_count captured inkling(s) from $INKWELL_SIM_NAME before OfflineSyncUITests runs" >&2
             rm -rf "$container/Documents/Inklings"
           fi
           mkdir -p "$INKWELL_STORAGE_DIR"

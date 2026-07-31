@@ -23,15 +23,18 @@ port and data. `./dev.sh` is the only documented way to run any of it; see
 Requires Docker with the `docker compose` v2 plugin - the backend and its storage run in a
 container per worktree.
 
+One command, nothing to run by hand afterwards:
+
 ```
 ./dev.sh
 ```
 
 Regenerates the Xcode project with this worktree's backend URL baked in, ensures and boots this
-worktree's simulator (a 1-3GB `simctl clone` the first time), then starts the backend in the
-foreground, on this worktree's own port and storage - no more typing than `go run .` was. The iOS
-half is best-effort: without Xcode/xcodegen it says so and brings up the backend alone.
-`./dev.sh info` prints exactly what got derived; `./dev.sh down` stops it.
+worktree's simulator (a 1-3GB `simctl clone` the first time), starts the backend in the foreground
+on this worktree's own port and storage, then builds, installs, and launches the app on that
+simulator and brings Simulator.app to the front - Inkwell ends up on screen, ready to tap, with no
+further steps. `./dev.sh info` prints exactly what got derived; Ctrl-C or `./dev.sh down` stops it.
+The iOS half is best-effort: without Xcode/xcodegen it says so and brings up the backend alone.
 `go run .` from `backend/` (see `backend/README.md`) still works for quick backend-only iteration,
 just without the isolation - fine for a single lane, not for running two at once.
 
