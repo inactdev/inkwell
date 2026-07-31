@@ -21,9 +21,10 @@ layers that both derive from the same worktree hash but use different mechanisms
    can be containerized, so isolation here is a distinct DerivedData path plus a dedicated cloned
    simulator device per worktree, not a container boundary.
 
-A lane never chooses between them or has to remember which is which - `./dev.sh` and
-`./dev.sh ios ...` cover layer 1 and layer 2 respectively, and both derive from the same source of
-truth (`scripts/inkwell-env.sh`).
+A lane never chooses between them or has to remember which is which - plain `./dev.sh` spans both
+(it builds and installs the app on this worktree's simulator as well as bringing the backend up),
+and `./dev.sh ios ...` exposes layer 2 on its own. Both derive from the same source of truth
+(`scripts/inkwell-env.sh`).
 
 ## How identity is derived
 
@@ -72,8 +73,12 @@ registry to update - the worktree's own path *is* the registry key.
 
 ```
 ./dev.sh                regenerate the Xcode project, ensure + boot this worktree's simulator,
-                          then start the backend (foreground; Ctrl-C stops it). The iOS half is
-                          best-effort: no Xcode/xcodegen and it continues backend-only.
+                          start the backend (foreground; Ctrl-C stops it), then build, install,
+                          and launch the app on that simulator and bring Simulator.app to the
+                          front - it ends with Inkwell on screen, not just the environment
+                          prepared. Best-effort throughout: no Xcode/xcodegen and it continues
+                          backend-only, and a failed build/install/launch is logged without
+                          taking the backend down with it.
 ./dev.sh down            stop it, and delete this worktree's simulator + DerivedData
 ./dev.sh ps               show this worktree's backend container
 ./dev.sh logs             follow this worktree's backend logs
@@ -84,7 +89,8 @@ registry to update - the worktree's own path *is* the registry key.
                           Also brings this worktree's backend container up detached and
                           launches tools/blackhole-proxy in front of it, both for
                           OfflineSyncUITests, and clears the app's captures on that device
-                          first so the proxy's black-hole window is that test's to spend.
+                          first - announcing how many - so the proxy's black-hole window is
+                          that test's to spend.
 ./dev.sh ios build        xcodebuild build, same isolation
 ./dev.sh ios clean        backstop: delete this worktree's simulator + DerivedData now
 ```
