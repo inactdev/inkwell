@@ -30,7 +30,8 @@ container per worktree.
 Regenerates the Xcode project with this worktree's backend URL baked in, ensures and boots this
 worktree's simulator (a 1-3GB `simctl clone` the first time), then starts the backend in the
 foreground, on this worktree's own port and storage - no more typing than `go run .` was. The iOS
-half is best-effort: without Xcode/xcodegen it says so and brings up the backend alone. `./dev.sh info` prints exactly what got derived; `./dev.sh down` stops it.
+half is best-effort: without Xcode/xcodegen it says so and brings up the backend alone.
+`./dev.sh info` prints what got derived; `./dev.sh down` stops it.
 `go run .` from `backend/` (see `backend/README.md`) still works for quick backend-only iteration,
 just without the isolation - fine for a single lane, not for running two at once.
 
@@ -113,6 +114,7 @@ what's intentionally deferred to later lanes.
 ios/              SwiftUI app (project.yml is the source of truth; .xcodeproj is generated)
 backend/          Go backend (Dockerfile builds it for dev.sh; the binary itself is unchanged)
 scripts/          dev.sh's per-worktree identity derivation
+tools/            blackhole-proxy: the hung backend OfflineSyncUITests runs against (test-only)
 dev.sh            the only documented way to run the stack - see docs/runtime-isolation.md
 docker-compose.yml   backend/storage isolation layer, driven by dev.sh
 docs/

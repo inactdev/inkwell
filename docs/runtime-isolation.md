@@ -80,7 +80,11 @@ registry to update - the worktree's own path *is* the registry key.
 ./dev.sh info             print this worktree's derived port/storage/simulator/etc
 ./dev.sh ios generate    regenerate the Xcode project with this worktree's backend URL baked in
 ./dev.sh ios sim          ensure + boot this worktree's simulator, print its UDID
-./dev.sh ios test         xcodebuild test against this worktree's simulator + DerivedData
+./dev.sh ios test         xcodebuild test against this worktree's simulator + DerivedData.
+                          Also brings this worktree's backend container up detached and
+                          launches tools/blackhole-proxy in front of it, both for
+                          OfflineSyncUITests, and clears the app's captures on that device
+                          first so the proxy's black-hole window is that test's to spend.
 ./dev.sh ios build        xcodebuild build, same isolation
 ./dev.sh ios clean        backstop: delete this worktree's simulator + DerivedData now
 ```
@@ -103,8 +107,10 @@ sync to the wrong (or no) backend. Confirmed by pointing a decoy backend at `808
 UI-test-driven capture land there instead of the real one, with `xcodebuild test` still reporting
 success throughout (the sync failure is swallowed, by design, per `docs/api-contract.md`'s offline
 semantics) - baking the URL into the bundle instead makes it correct regardless of which process
-does the launching. An actual `INKWELL_BACKEND_URL` environment variable still overrides it, for
-pointing a running app at a different backend by hand.
+does the launching. An actual `INKWELL_BACKEND_URL` environment variable still overrides it - for
+pointing a running app at a different backend by hand, and for `OfflineSyncUITests`, which sets it
+in `XCUIApplication().launchEnvironment` (which the app under test *does* inherit, unlike the
+scheme's own environment) to point the app at `tools/blackhole-proxy` instead of the real backend.
 
 ## The iOS Simulator: one clone per worktree
 
