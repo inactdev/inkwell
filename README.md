@@ -13,16 +13,21 @@ the two halves and `/docs/audio-spike.md` for the proof that the core audio mech
 - **`backend/`** - a small Go server. Receives a captured inkling, writes it as markdown with
   YAML front matter into a git repo, and commits.
 
-## Running the backend
+## Running the stack
+
+Every worktree gets its own backend port, storage directory, and (for iOS) simulator, derived
+automatically - so two lanes never collide at runtime the way they would fighting over the same
+port and data. `./dev.sh` is the only documented way to run any of it; see
+`docs/runtime-isolation.md` for how and why.
 
 ```
-cd backend
-go run . --addr 127.0.0.1:8080 --storage-dir ./data
+./dev.sh
 ```
 
-`--storage-dir` is `git init`'d automatically on first run if it isn't already a repo. Both
-flags have env var equivalents (`INKWELL_ADDR`, `INKWELL_STORAGE_DIR`) - see `backend/README.md`.
-Run `go test ./...` from `backend/` for the test suite.
+Starts the backend in the foreground, on this worktree's own port and storage - no more typing
+than `go run .` was. `./dev.sh info` prints exactly what got derived; `./dev.sh down` stops it.
+`go run .` from `backend/` (see `backend/README.md`) still works for quick backend-only iteration,
+just without the isolation - fine for a single lane, not for running two at once.
 
 ## Running the iOS app
 
@@ -30,24 +35,24 @@ Requires Xcode 16.4 and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew
 xcodegen`) - the `.xcodeproj` is generated from `ios/project.yml` and isn't committed.
 
 ```
-cd ios
-xcodegen generate
-open Inkwell.xcodeproj
+./dev.sh ios generate
+open ios/Inkwell.xcodeproj
 ```
 
-Build and run on an iPhone 16 simulator (Product > Run, or `xcodebuild ... -destination
-'platform=iOS Simulator,name=iPhone 16'`). The app talks to `http://127.0.0.1:8080` by default,
-which reaches the Mac's own backend directly from the simulator - override with the
-`INKWELL_BACKEND_URL` environment variable if you're running the backend elsewhere. Grant
-microphone and speech recognition access when prompted - tapping the well starts a dictation
-segment, so capture needs both, and declining either leaves nothing to capture with. Tapping
-the words hands over the keyboard, so they can be typed or corrected by hand from there.
+This bakes this worktree's backend URL into the generated project's Run and Test schemes, so the
+app already reaches its own worktree's backend in the simulator - nothing to edit by hand. Build
+and run on an iPhone 16 simulator (Product > Run). Grant microphone and speech recognition access
+when prompted - tapping the well starts a dictation segment, so capture needs both, and declining
+either leaves nothing to capture with. Tapping the words hands over the keyboard, so they can be
+typed or corrected by hand from there.
 
 Test suites: `InkwellTests` (the audio spike proof, plus the capture state-machine regressions -
 duplicate inklings, a failed save, interrupted segments) and `InkwellUITests` (the capture flow,
 the offline-then-sync scenario, and a long dictation staying scrollable on screen, driven through
-the real UI). Run via Xcode's Test navigator or
-`xcodebuild test -only-testing:<TargetName>/<ClassName>`.
+the real UI). `./dev.sh ios test` builds and runs them against a simulator device cloned just for
+this worktree, so two worktrees testing at once don't share a device, DerivedData, or app install
+(see `docs/runtime-isolation.md`) - equivalent to Xcode's Test navigator or
+`xcodebuild test -only-testing:<TargetName>/<ClassName>`, minus the collision risk.
 
 ## Why Go for the backend
 
@@ -82,9 +87,13 @@ what's intentionally deferred to later lanes.
 
 ```
 ios/              SwiftUI app (project.yml is the source of truth; .xcodeproj is generated)
-backend/          Go backend
+backend/          Go backend (Dockerfile builds it for dev.sh; the binary itself is unchanged)
+scripts/          dev.sh's per-worktree identity derivation
+dev.sh            the only documented way to run the stack - see docs/runtime-isolation.md
+docker-compose.yml   backend/storage isolation layer, driven by dev.sh
 docs/
-  api-contract.md       the JSON/endpoint/front-matter contract between the two halves
-  audio-spike.md         the audio spike result, proven, with how it was verified
-  screenshots/            capture flow + offline-sync evidence, at iPhone size
+  api-contract.md         the JSON/endpoint/front-matter contract between the two halves
+  audio-spike.md           the audio spike result, proven, with how it was verified
+  runtime-isolation.md     why/how two worktrees never collide at runtime
+  screenshots/              capture flow + offline-sync evidence, at iPhone size
 ```

@@ -66,8 +66,13 @@ schemes:
         InkwellTests: [test]
         InkwellUITests: [test]
     test:
+      config: Debug
       targets:
         - InkwellTests
         - InkwellUITests
+      environmentVariables:
+        INKWELL_BACKEND_URL: ${INKWELL_BACKEND_URL}
     run:
       config: Debug
+      environmentVariables:
+        INKWELL_BACKEND_URL: ${INKWELL_BACKEND_URL}

@@ -4,6 +4,11 @@ Receives a captured inkling from the phone and writes it as markdown into a git 
 `/docs/api-contract.md` for the full API and `/README.md` for why Go. No external dependencies -
 standard library only, plus the system `git` binary via `os/exec`.
 
+Day to day, run this through `../dev.sh` from the repo root, not directly - it gives this worktree
+its own port and storage so it can't collide with another worktree's backend (see
+`/docs/runtime-isolation.md`). What follows here is the raw binary's own interface, for reference
+and for quick one-off iteration on the backend alone.
+
 ## Run
 
 ```
