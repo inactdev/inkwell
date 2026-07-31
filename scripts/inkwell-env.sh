@@ -121,6 +121,21 @@ inkwell_release_template_lock() {
   rm -f "$INKWELL_TEMPLATE_LOCK"
 }
 
+# Staging devices are inert - nothing ever looks them up by name - so one
+# left behind by a hard kill costs disk and nothing else. Only ever called
+# while holding the lock, where no other lane can have a staging device in
+# flight, so anything matching here is known to be abandoned.
+inkwell_sweep_pending_template_sims() {
+  local udid
+  xcrun simctl list devices 2>/dev/null \
+    | grep -F "    ${INKWELL_TEMPLATE_SIM_NAME}-pending-" \
+    | sed -nE 's/.*\(([0-9A-F-]+)\).*/\1/p' \
+    | while read -r udid; do
+        echo "inkwell: deleting an abandoned simulator template staging device ($udid)" >&2
+        xcrun simctl delete "$udid" >/dev/null 2>&1 || true
+      done || true
+}
+
 # A device that was created but not yet verified must not outlive this run:
 # it would be cached under the template name and cloned, missing grants and
 # all, by every worktree afterwards. Idempotent - the INT and EXIT traps both
@@ -158,6 +173,7 @@ inkwell_ensure_template_sim() {
   trap 'inkwell_abandon_template_sim' EXIT
   trap 'inkwell_abandon_template_sim; exit 130' HUP INT TERM
 
+  inkwell_sweep_pending_template_sims
   udid=$(inkwell_find_sim_udid "$INKWELL_TEMPLATE_SIM_NAME") || udid=""
   if [ -z "$udid" ]; then
     if inkwell_create_template_sim; then
@@ -173,14 +189,17 @@ inkwell_ensure_template_sim() {
   echo "$udid"
 }
 
-# Every step is checked and the grant is read back before this device is
-# allowed to keep the template name: it's cached by name forever afterwards,
-# so a half-configured one would silently propagate a missing grant into
-# every worktree's clone. Publishes the UDID through INKWELL_TEMPLATE_UDID
+# The template name is the commit point, not the starting point: the device
+# is built under a staging name and only renamed once both grants have been
+# read back out of its TCC.db. The name is what every later run and every
+# worktree clone trusts, so nothing may wear it until it has been proven -
+# and unlike the traps above, a rename can't be missed by SIGKILL or a power
+# cut, which would otherwise leave an ungranted device answering to the
+# template name forever. Publishes the UDID through INKWELL_TEMPLATE_UDID
 # rather than stdout so it runs in its caller's shell, where the caller's
 # trap can see the in-progress device in INKWELL_TEMPLATE_PENDING.
 inkwell_create_template_sim() {
-  local udid runtime tcc_db granted=""
+  local udid runtime tcc_db staging grants=""
 
   runtime=$(inkwell_latest_ios_runtime) || runtime=""
   if [ -z "$runtime" ]; then
@@ -188,8 +207,9 @@ inkwell_create_template_sim() {
     return 1
   fi
 
+  staging="${INKWELL_TEMPLATE_SIM_NAME}-pending-$$"
   echo "inkwell: creating simulator template (one-time; grants mic + speech recognition)" >&2
-  udid=$(xcrun simctl create "$INKWELL_TEMPLATE_SIM_NAME" "$INKWELL_SIM_DEVICETYPE" "$runtime") || return 1
+  udid=$(xcrun simctl create "$staging" "$INKWELL_SIM_DEVICETYPE" "$runtime") || return 1
   INKWELL_TEMPLATE_PENDING="$udid"
 
   tcc_db="$HOME/Library/Developer/CoreSimulator/Devices/$udid/data/Library/TCC/TCC.db"
@@ -199,12 +219,19 @@ inkwell_create_template_sim() {
     && xcrun simctl shutdown "$udid" >&2 \
     && sqlite3 "$tcc_db" \
       "INSERT OR IGNORE INTO access (service,client,client_type,auth_value,auth_reason,auth_version) VALUES ('kTCCServiceSpeechRecognition','$INKWELL_BUNDLE_ID',0,2,3,1);" >&2; then
-    granted=$(sqlite3 "$tcc_db" \
-      "SELECT auth_value FROM access WHERE service='kTCCServiceSpeechRecognition' AND client='$INKWELL_BUNDLE_ID';" 2>/dev/null) || granted=""
+    grants=$(sqlite3 "$tcc_db" \
+      "SELECT COUNT(*) FROM access WHERE client='$INKWELL_BUNDLE_ID' AND auth_value=2 AND service IN ('kTCCServiceMicrophone','kTCCServiceSpeechRecognition');" 2>/dev/null) || grants=""
   fi
 
-  if [ "$granted" != "2" ]; then
+  if [ "$grants" != "2" ]; then
     echo "inkwell: simulator template setup failed - mic/speech-recognition grants did not land, deleting the half-configured device" >&2
+    xcrun simctl delete "$udid" >/dev/null 2>&1 || true
+    INKWELL_TEMPLATE_PENDING=""
+    return 1
+  fi
+
+  if ! xcrun simctl rename "$udid" "$INKWELL_TEMPLATE_SIM_NAME" >&2; then
+    echo "inkwell: could not name the verified simulator template, deleting it" >&2
     xcrun simctl delete "$udid" >/dev/null 2>&1 || true
     INKWELL_TEMPLATE_PENDING=""
     return 1
