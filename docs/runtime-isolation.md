@@ -83,7 +83,12 @@ registry to update - the worktree's own path *is* the registry key.
                           single-instance, so if another worktree already has it open,
                           macOS activates that instance instead of starting a second.
                           This worktree's device still gets its own window and the app
-                          still launches on it - it just may not be the frontmost window.
+                          still launches on it; dev.sh also tries to raise that window
+                          to the front (inkwell_focus_sim_window in dev.sh), but that
+                          attempt was built and tested in a sandboxed session with no
+                          real display and was never visually confirmed to work - treat
+                          "which window ends up frontmost in the two-lane case" as
+                          unverified until checked on a real screen.
 ./dev.sh up -d           the same run, app on screen included, except the backend is left
                           running in the background and the command returns rather than
                           holding the terminal (`--detach`/`--wait` behave the same way).

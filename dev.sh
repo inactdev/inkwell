@@ -104,6 +104,52 @@ inkwell_launch_when_backend_ready() {
   fi
 }
 
+# Simulator.app shows every booted device in its own window inside one
+# process - `open -a Simulator --args -CurrentDeviceUDID` only picks which of
+# those wins focus on a *cold* launch; once the app is already running (the
+# case this exists for - another worktree's lane got there first) macOS just
+# activates the existing process and the flag is discarded, so this worktree's
+# window may not be the one that comes forward. This targets Simulator's own
+# AppleScript dictionary directly (a settable window `index`, "ordered front
+# to back") rather than going through System Events, so it doesn't need the
+# Accessibility permission System Events window-scripting requires - only the
+# same Apple-Events authorization `activate` already relies on.
+#
+# NOT VISUALLY VERIFIED. Built and tested in a sandboxed session with no real
+# interactive display (screencapture there returns only the lock-screen
+# wallpaper, never actual app windows), so there was no way to confirm the
+# right window actually ends up frontmost. What *is* confirmed from that
+# session: querying Simulator's window list over AppleScript is itself
+# unreliable there - sometimes an immediate error, sometimes no response
+# for minutes - which is why this is wrapped in a hard watchdog rather than
+# left to run free. A wrong-frontmost-window miss is a far smaller problem
+# than turning "one command, terminal comes back" into "one command that
+# might never return," so the watchdog is not optional. The mechanism
+# (Simulator's own scripting dictionary, index-based window raise) is the
+# standard approach for this and should work on a real screen - someone
+# with actual GUI access needs to confirm it before trusting this comment
+# further.
+inkwell_focus_sim_window() {
+  local sim_name=$1 osa_pid watchdog_pid
+  osascript >/dev/null 2>&1 <<OSA &
+tell application "Simulator"
+  activate
+  repeat with w in windows
+    if name of w contains "$sim_name" then
+      set index of w to 1
+      exit repeat
+    end if
+  end repeat
+end tell
+OSA
+  osa_pid=$!
+  ( sleep 5; kill "$osa_pid" 2>/dev/null ) &
+  watchdog_pid=$!
+  wait "$osa_pid" 2>/dev/null
+  kill "$watchdog_pid" 2>/dev/null
+  wait "$watchdog_pid" 2>/dev/null
+}
+
 # Builds (incrementally - xcodebuild itself skips work that's already up to
 # date, so a rerun with nothing changed is fast), installs, and launches the
 # app on this worktree's simulator, then brings Simulator.app to the front so
@@ -135,15 +181,14 @@ inkwell_build_install_launch() {
     echo "inkwell: installing Inkwell on $INKWELL_SIM_NAME failed - not launching" >&2
     return 1
   fi
-  # -CurrentDeviceUDID is read once, at Simulator.app's own launch, so this
-  # brings up this worktree's device rather than whichever one was last used
-  # - on a cold start. That's as far as it goes: when another lane already
-  # has Simulator.app open, macOS activates that instance and discards the
-  # flag, and `open -n` does not buy a second one (Simulator is effectively
-  # single-instance - verified on Xcode 16.4: -n returns 0 and no new
-  # process appears). This worktree's device still gets its own window
-  # there, and the app still launches on it; it just may not be frontmost.
+  # Covers the cold-launch case (Simulator.app not running yet): picks this
+  # worktree's device as the one that gets focus when the app starts up.
+  # `open -n` does not buy a second Simulator.app instance to sidestep the
+  # already-running case below - verified on Xcode 16.4: `-n` returns 0 and no
+  # new process appears, so there is always exactly one Simulator.app to aim.
   open -a Simulator --args -CurrentDeviceUDID "$udid" || true
+  # Covers the already-running case: see inkwell_focus_sim_window above.
+  inkwell_focus_sim_window "$INKWELL_SIM_NAME"
   # Without --terminate-running-process, a copy left running by an earlier
   # ./dev.sh is merely brought to the front: the bundle on disk would be the
   # build just installed while the pixels on screen are still the previous one.
