@@ -1,12 +1,27 @@
 import XCTest
 
 /// Proves the product contract's central guarantee end to end: a capture
-/// made with the backend completely unreachable still lands locally, and
-/// hands itself over quietly once the backend comes back - no retry
-/// button, no error, just the "not yet synced" indicator clearing on its
-/// own. The backend's availability during this test is controlled entirely
-/// from outside the test process (see backend/README.md's e2e script);
-/// this test only observes the phone side.
+/// made while the backend is genuinely unreachable - hung, not refused -
+/// still lands locally, and hands itself over quietly once the backend
+/// becomes reachable, with no retry button, no error, and no relaunch.
+///
+/// Deliberately a timeout, not a connection refusal: on a subway, a dropped
+/// connection doesn't answer "connection refused" - it just never answers.
+/// Those take very different amounts of time to fail (see
+/// SyncCoordinator.swift's own explicit request timeout), so a test built
+/// around stopping and starting the real backend would prove the wrong
+/// thing - refusal fails in milliseconds and never exercises the timeout
+/// path at all.
+///
+/// tools/blackhole-proxy stands in for the backend here: it accepts
+/// connections and holds them open, silent, for a fixed window - a genuine
+/// black hole - then autonomously starts forwarding to the real backend
+/// once that window elapses, with no external signal needed.
+/// `dev.sh ios test` launches it and bakes its URL into the Test scheme
+/// (see project.yml); this test reads that and points the app at it via
+/// launchEnvironment before app.launch(), since XCUIApplication().launch()
+/// does not reliably inherit the scheme's own environment variables (see
+/// AppConfig.swift).
 @MainActor
 final class OfflineSyncUITests: XCTestCase {
 
@@ -14,8 +29,14 @@ final class OfflineSyncUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func testCaptureOfflineThenSyncsWhenBackendReturns() throws {
+    func testCaptureHangsThenSyncsWhenBackendBecomesReachable() throws {
+        guard let proxyURL = ProcessInfo.processInfo.environment["INKWELL_TEST_PROXY_URL"] else {
+            XCTFail("INKWELL_TEST_PROXY_URL not set - run via `./dev.sh ios test`, which launches tools/blackhole-proxy and bakes this in")
+            return
+        }
+
         let app = XCUIApplication()
+        app.launchEnvironment["INKWELL_BACKEND_URL"] = proxyURL
         app.launch()
 
         let inkwell = app.otherElements["inkwell"]
@@ -41,10 +62,13 @@ final class OfflineSyncUITests: XCTestCase {
         XCTAssertTrue(toast.waitForExistence(timeout: 3))
         XCTAssertTrue(inkwell.waitForExistence(timeout: 5))
 
-        // The backend is not running yet at this point - confirm the
-        // capture landed locally anyway, marked as not yet synced.
+        // The proxy is black-holing every connection right now, and the
+        // app's own sync attempt should be hung inside its own short,
+        // explicit request timeout - not crashed, not frozen, just quietly
+        // unsynced while the attempt plays out in the background.
         let unsyncedBadge = app.staticTexts["unsyncedCount"]
-        XCTAssertTrue(unsyncedBadge.waitForExistence(timeout: 3), "capture should be visible as unsynced while the backend is down")
+        XCTAssertTrue(unsyncedBadge.waitForExistence(timeout: 3), "capture should be visible as unsynced while the backend is a black hole")
+        XCTAssertTrue(app.otherElements["inkwell"].isHittable, "the UI must stay responsive while a sync attempt is hanging in the background")
         attachScreenshot(app, name: "offline-1-captured-unsynced")
 
         app.buttons["showList"].tap()
@@ -53,12 +77,9 @@ final class OfflineSyncUITests: XCTestCase {
         attachScreenshot(app, name: "offline-2-list-unsynced")
         app.buttons["Close"].tap()
 
-        // The external orchestrator starts the backend some seconds into
-        // this run (see backend's e2e script) - poll for the sync
-        // coordinator's next pass (foreground timer + reachability probe)
-        // to notice and clear the indicator. No manual retry is triggered
-        // from the test; this is the same quiet, automatic path the owner
-        // would see.
+        // No relaunch, no retry button, nothing but time passing: the proxy
+        // opens up on its own clock, and the app's own periodic sync pass
+        // picks it up.
         let badgeGone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: unsyncedBadge)
         wait(for: [badgeGone], timeout: 90)
         attachScreenshot(app, name: "offline-3-synced")

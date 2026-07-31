@@ -5,12 +5,13 @@
 # docs/runtime-isolation.md for why and scripts/inkwell-env.sh for how.
 #
 # Usage:
-#   ./dev.sh              start the backend stack (same as `up`)
-#   ./dev.sh up           start the backend stack in the foreground
+#   ./dev.sh              start everything (same as `up`)
+#   ./dev.sh up           start the backend AND this worktree's simulator,
+#                         Xcode project regenerated to match, in one command
 #   ./dev.sh down         stop it, and delete this worktree's simulator+DerivedData
 #   ./dev.sh info         print this worktree's derived port/storage/etc
-#   ./dev.sh ios generate regenerate the Xcode project, backend URL baked in
-#   ./dev.sh ios sim      ensure+boot this worktree's simulator, print its UDID
+#   ./dev.sh ios generate regenerate the Xcode project alone, backend URL baked in
+#   ./dev.sh ios sim      ensure+boot this worktree's simulator alone, print its UDID
 #   ./dev.sh ios test     xcodebuild test against this worktree's simulator
 #   ./dev.sh ios build    xcodebuild build against this worktree's simulator
 #   ./dev.sh ios clean    delete this worktree's simulator+DerivedData now
@@ -34,6 +35,21 @@ case "$cmd" in
   up)
     mkdir -p "$INKWELL_STORAGE_DIR"
     echo "inkwell: $INKWELL_PROJECT_NAME -> http://127.0.0.1:$INKWELL_PORT (storage: $INKWELL_STORAGE_DIR)"
+    # One command brings up everything - containers and simulator together -
+    # so the baked Info.plist URL can never drift from the live backend
+    # port: both are derived and applied together, every time. Best-effort:
+    # a missing Xcode/xcodegen must not stop the backend from starting.
+    export INKWELL_BACKEND_URL
+    if command -v xcodegen >/dev/null 2>&1 && [ -d ios ]; then
+      if inkwell_regenerate_ios_project && udid=$(inkwell_ensure_worktree_sim); then
+        inkwell_boot_sim "$udid"
+        echo "inkwell: simulator $INKWELL_SIM_NAME ($udid) ready"
+      else
+        echo "inkwell: could not prepare the iOS side - continuing, the backend still starts" >&2
+      fi
+    else
+      echo "inkwell: xcodegen not found or ios/ missing - skipping the iOS side, backend only" >&2
+    fi
     exec docker compose up --build "$@"
     ;;
   down)
@@ -68,7 +84,7 @@ EOF
     export INKWELL_BACKEND_URL
     case "$sub" in
       generate)
-        (cd ios && xcodegen generate)
+        inkwell_regenerate_ios_project
         ;;
       sim)
         udid=$(inkwell_ensure_worktree_sim)
@@ -79,10 +95,27 @@ EOF
         inkwell_teardown_worktree_sim
         ;;
       test|build)
-        (cd ios && xcodegen generate)
+        inkwell_regenerate_ios_project
         udid=$(inkwell_ensure_worktree_sim)
         inkwell_boot_sim "$udid"
-        exec xcodebuild "$sub" \
+        # OfflineSyncUITests needs the real backend reachable (through the
+        # black-hole proxy, once it opens up) and running detached, since
+        # this command doesn't exit until the test suite does.
+        if [ "$sub" = "test" ]; then
+          docker compose up -d --build
+          export INKWELL_TEST_PROXY_URL
+          if command -v go >/dev/null 2>&1; then
+            go run "$INKWELL_WORKTREE/tools/blackhole-proxy/main.go" \
+              -listen "127.0.0.1:$INKWELL_TEST_PROXY_PORT" \
+              -upstream "127.0.0.1:$INKWELL_PORT" \
+              -hold-for 20s &
+            proxy_pid=$!
+            trap 'kill $proxy_pid 2>/dev/null || true' EXIT INT TERM
+          else
+            echo "inkwell: go not found - OfflineSyncUITests' black-hole proxy won't be available" >&2
+          fi
+        fi
+        xcodebuild "$sub" \
           -project ios/Inkwell.xcodeproj \
           -scheme Inkwell \
           -destination "id=$udid" \

@@ -15,7 +15,7 @@ inkwell_worktree_root() {
 # INKWELL_PORT is only a *candidate* here - inkwell_free_port below is what
 # actually guarantees it's collision-free.
 inkwell_derive() {
-  local worktree hash_full base_port
+  local worktree hash_full base_port base_proxy_port
   worktree=$(inkwell_worktree_root) || { echo "inkwell: not inside a git worktree" >&2; return 1; }
   hash_full=$(printf '%s' "$worktree" | shasum -a 256 | cut -d' ' -f1)
 
@@ -29,9 +29,35 @@ inkwell_derive() {
   INKWELL_PORT=$(inkwell_free_port "$base_port" "$worktree") || return 1
   INKWELL_BACKEND_URL="http://127.0.0.1:${INKWELL_PORT}"
 
+  # A distinct hash slice and base range so it never lands on the same
+  # candidate as INKWELL_PORT for the same worktree. Only used by
+  # tools/blackhole-proxy for OfflineSyncUITests (see dev.sh's "ios test") -
+  # it has no persisted state to keep stable across restarts the way the
+  # backend port does, since it's launched fresh every test run.
+  base_proxy_port=$((16#${hash_full:16:8} % 10000 + 40000))
+  INKWELL_TEST_PROXY_PORT=$(inkwell_free_port "$base_proxy_port" "$worktree") || return 1
+  INKWELL_TEST_PROXY_URL="http://127.0.0.1:${INKWELL_TEST_PROXY_PORT}"
+
   export INKWELL_WORKTREE INKWELL_PROJECT_NAME INKWELL_STORAGE_DIR \
-    INKWELL_DERIVED_DATA INKWELL_SIM_NAME INKWELL_PORT INKWELL_BACKEND_URL
+    INKWELL_DERIVED_DATA INKWELL_SIM_NAME INKWELL_PORT INKWELL_BACKEND_URL \
+    INKWELL_TEST_PROXY_PORT INKWELL_TEST_PROXY_URL
   export COMPOSE_PROJECT_NAME="$INKWELL_PROJECT_NAME"
+}
+
+# Regenerates the Xcode project via xcodegen. If a previously-generated
+# project.pbxproj already has a *different* backend URL baked in - e.g. a
+# stale build made before this worktree's port had to move off its usual
+# candidate - says so before overwriting it, so a drift is visible instead
+# of silently replaced with no trace.
+inkwell_regenerate_ios_project() {
+  local pbxproj="$INKWELL_WORKTREE/ios/Inkwell.xcodeproj/project.pbxproj" old
+  if [ -f "$pbxproj" ]; then
+    old=$(grep -m1 'INKWELL_BACKEND_URL = ' "$pbxproj" 2>/dev/null | sed -E 's/.*"([^"]*)".*/\1/') || old=""
+    if [ -n "$old" ] && [ "$old" != "$INKWELL_BACKEND_URL" ]; then
+      echo "inkwell: backend URL drifted from $old to $INKWELL_BACKEND_URL, regenerating" >&2
+    fi
+  fi
+  (cd "$INKWELL_WORKTREE/ios" && xcodegen generate)
 }
 
 # Starts scanning at $1 and walks forward until it finds a port nothing is
@@ -132,7 +158,10 @@ inkwell_sweep_pending_template_sims() {
     | sed -nE 's/.*\(([0-9A-F-]+)\).*/\1/p' \
     | while read -r udid; do
         echo "inkwell: deleting an abandoned simulator template staging device ($udid)" >&2
-        xcrun simctl delete "$udid" >/dev/null 2>&1 || true
+        xcrun simctl shutdown "$udid" >/dev/null 2>&1
+        if ! xcrun simctl delete "$udid" >/dev/null 2>&1; then
+          echo "inkwell: could not delete staging device $udid - it may still be present" >&2
+        fi
       done || true
 }
 
@@ -143,7 +172,10 @@ inkwell_sweep_pending_template_sims() {
 inkwell_abandon_template_sim() {
   if [ -n "${INKWELL_TEMPLATE_PENDING:-}" ]; then
     echo "inkwell: interrupted while preparing the simulator template - deleting the unverified device" >&2
-    xcrun simctl delete "$INKWELL_TEMPLATE_PENDING" >/dev/null 2>&1 || true
+    xcrun simctl shutdown "$INKWELL_TEMPLATE_PENDING" >/dev/null 2>&1
+    if ! xcrun simctl delete "$INKWELL_TEMPLATE_PENDING" >/dev/null 2>&1; then
+      echo "inkwell: could not delete $INKWELL_TEMPLATE_PENDING - it may still be present" >&2
+    fi
     INKWELL_TEMPLATE_PENDING=""
   fi
   inkwell_release_template_lock

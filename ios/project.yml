@@ -76,5 +76,10 @@ schemes:
       targets:
         - InkwellTests
         - InkwellUITests
+      # Read by OfflineSyncUITests via ProcessInfo, not by the app-under-test -
+      # safe as a scheme env var for exactly that reason (see AppConfig.swift's
+      # comment on why INKWELL_BACKEND_URL itself is NOT done this way).
+      environmentVariables:
+        INKWELL_TEST_PROXY_URL: ${INKWELL_TEST_PROXY_URL}
     run:
       config: Debug
