@@ -102,6 +102,16 @@ EOF
         # black-hole proxy, once it opens up) and running detached, since
         # this command doesn't exit until the test suite does.
         if [ "$sub" = "test" ]; then
+          # The black-hole window opens on the proxy's *first* connection, and
+          # the app syncs everything unsynced the moment it launches - so a
+          # capture left on this device by an earlier run would start that
+          # clock before OfflineSyncUITests ever makes its own. Clearing the
+          # app's captures (and nothing else - not TCC, not the backend's
+          # storage) keeps the window the test's to spend.
+          container=$(xcrun simctl get_app_container "$udid" "$INKWELL_BUNDLE_ID" data 2>/dev/null) || container=""
+          if [ -n "$container" ]; then
+            rm -rf "$container/Documents/Inklings"
+          fi
           mkdir -p "$INKWELL_STORAGE_DIR"
           docker compose up -d --build
           export INKWELL_TEST_PROXY_URL
