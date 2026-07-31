@@ -79,6 +79,15 @@ registry to update - the worktree's own path *is* the registry key.
                           prepared. Best-effort throughout: no Xcode/xcodegen and it continues
                           backend-only, and a failed build/install/launch is logged without
                           taking the backend down with it.
+                          One caveat with two lanes at once: Simulator.app is effectively
+                          single-instance, so if another worktree already has it open,
+                          macOS activates that instance instead of starting a second.
+                          This worktree's device still gets its own window and the app
+                          still launches on it - it just may not be the frontmost window.
+./dev.sh up -d           the same run, app on screen included, except the backend is left
+                          running in the background and the command returns rather than
+                          holding the terminal (`--detach`/`--wait` behave the same way).
+                          `./dev.sh down` is then what stops it.
 ./dev.sh down            stop it, and delete this worktree's simulator + DerivedData
 ./dev.sh ps               show this worktree's backend container
 ./dev.sh logs             follow this worktree's backend logs

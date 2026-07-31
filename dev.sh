@@ -9,6 +9,10 @@
 #   ./dev.sh up           start the backend AND this worktree's simulator,
 #                         Xcode project regenerated to match, app built,
 #                         installed, and launched on screen - in one command
+#   ./dev.sh up -d        same, all the way to the app on screen, but the
+#                         backend is left running in the background and the
+#                         command returns instead of holding the terminal
+#                         (`--detach`/`--wait` too - they're compose's flags)
 #   ./dev.sh down         stop it, and delete this worktree's simulator+DerivedData
 #   ./dev.sh info         print this worktree's derived port/storage/etc
 #   ./dev.sh ios generate regenerate the Xcode project alone, backend URL baked in
@@ -131,8 +135,14 @@ inkwell_build_install_launch() {
     echo "inkwell: installing Inkwell on $INKWELL_SIM_NAME failed - not launching" >&2
     return 1
   fi
-  # -CurrentDeviceUDID, or the window that comes forward is whichever device
-  # was last active - another worktree's, when two lanes are running.
+  # -CurrentDeviceUDID is read once, at Simulator.app's own launch, so this
+  # brings up this worktree's device rather than whichever one was last used
+  # - on a cold start. That's as far as it goes: when another lane already
+  # has Simulator.app open, macOS activates that instance and discards the
+  # flag, and `open -n` does not buy a second one (Simulator is effectively
+  # single-instance - verified on Xcode 16.4: -n returns 0 and no new
+  # process appears). This worktree's device still gets its own window
+  # there, and the app still launches on it; it just may not be frontmost.
   open -a Simulator --args -CurrentDeviceUDID "$udid" || true
   # Without --terminate-running-process, a copy left running by an earlier
   # ./dev.sh is merely brought to the front: the bundle on disk would be the
