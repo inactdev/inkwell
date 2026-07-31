@@ -21,6 +21,12 @@ final class CaptureFlowUITests: XCTestCase {
 
         let inkwell = app.otherElements["inkwell"]
         XCTAssertTrue(inkwell.waitForExistence(timeout: 5))
+
+        // Counted before and after rather than asserted as "exactly one", so
+        // the duplicate check at the end means the same thing on a simulator
+        // that already has captures on disk from an earlier run.
+        let rowsBefore = countCaptureRows(app)
+
         inkwell.tap()
 
         // Permission dialogs are pre-granted for this build in CI; if they
@@ -51,10 +57,37 @@ final class CaptureFlowUITests: XCTestCase {
 
         // Back to idle once the toast clears.
         XCTAssertTrue(inkwell.waitForExistence(timeout: 5))
+        XCTAssertTrue(toast.waitForNonExistence(timeout: 5))
+
+        // The saved draft is really let go, not just hidden behind the toast:
+        // a Done button still sitting on the idle screen means the words are
+        // still readable as content, and tapping it saves them a second time.
+        XCTAssertTrue(app.staticTexts["Tap the well to begin"].waitForExistence(timeout: 2))
+        XCTAssertFalse(app.buttons["done"].exists, "the idle screen after a save must not offer Done again")
+        XCTAssertFalse(app.buttons["Discard"].exists, "nothing is left to discard once the capture is saved")
+        attachScreenshot(app, name: "06-idle-after-save")
 
         app.buttons["showList"].tap()
-        let firstRow = app.staticTexts["Rig a tide-powered charger for the buoy sensors so they neve…"]
-        XCTAssertTrue(firstRow.waitForExistence(timeout: 5))
+        XCTAssertTrue(captureRows(app).firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(
+            captureRows(app).count, rowsBefore + 1,
+            "one capture must land in the well once, not twice"
+        )
         attachScreenshot(app, name: "05-list")
+    }
+
+    /// Opens the well, counts this capture's rows, and closes it again,
+    /// leaving the app back on the screen it was called from.
+    private func countCaptureRows(_ app: XCUIApplication) -> Int {
+        app.buttons["showList"].tap()
+        XCTAssertTrue(app.navigationBars["The well"].waitForExistence(timeout: 5))
+        let count = captureRows(app).count
+        app.buttons["Close"].tap()
+        XCTAssertTrue(app.otherElements["inkwell"].waitForExistence(timeout: 5))
+        return count
+    }
+
+    private func captureRows(_ app: XCUIApplication) -> XCUIElementQuery {
+        app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Rig a tide-powered charger"))
     }
 }
