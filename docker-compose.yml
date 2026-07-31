@@ -7,7 +7,7 @@ services:
   backend:
     build: ./backend
     ports:
-      - "${INKWELL_PORT}:8080"
+      - "127.0.0.1:${INKWELL_PORT}:8080"
     volumes:
       - ${INKWELL_STORAGE_DIR}:/data
     environment:

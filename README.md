@@ -39,8 +39,10 @@ xcodegen`) - the `.xcodeproj` is generated from `ios/project.yml` and isn't comm
 open ios/Inkwell.xcodeproj
 ```
 
-This bakes this worktree's backend URL into the generated project's Run and Test schemes, so the
-app already reaches its own worktree's backend in the simulator - nothing to edit by hand. Build
+This bakes this worktree's backend URL into the app's own `Info.plist` at build time, read back via
+`Bundle.main` in `AppConfig.swift` - deliberately not a scheme environment variable, since a
+UI-test-launched app doesn't inherit those (see `docs/runtime-isolation.md`). So the app already
+reaches its own worktree's backend in the simulator - nothing to edit by hand. Build
 and run on an iPhone 16 simulator (Product > Run). Grant microphone and speech recognition access
 when prompted - tapping the well starts a dictation segment, so capture needs both, and declining
 either leaves nothing to capture with. Tapping the words hands over the keyboard, so they can be

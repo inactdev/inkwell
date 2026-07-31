@@ -69,13 +69,60 @@ inkwell_latest_ios_runtime() {
     | sed -E 's/.*(com\.apple\.CoreSimulator\.SimRuntime\.[^ )]+).*/\1/'
 }
 
+# Machine-wide, so it needs a machine-wide lock: the template is created by
+# whichever worktree gets there first, and a second worktree racing it would
+# otherwise find the device mid-setup and clone it while it's still booted
+# (clone requires a shutdown device) or before the grants land. Held across
+# the whole find-or-create block, not just the create.
+INKWELL_TEMPLATE_LOCK="${TMPDIR:-/tmp}/inkwell-sim-template.lock"
+
+inkwell_acquire_template_lock() {
+  local waited=0 holder
+  while ! mkdir "$INKWELL_TEMPLATE_LOCK" 2>/dev/null; do
+    if [ "$waited" -eq 0 ]; then
+      echo "inkwell: waiting for another worktree to finish preparing the simulator template" >&2
+    fi
+    # Only after a grace period, so this can't mistake the split second
+    # between mkdir and the pid write for an abandoned lock.
+    if [ "$waited" -ge 10 ]; then
+      holder=$(cat "$INKWELL_TEMPLATE_LOCK/pid" 2>/dev/null || true)
+      if [ -z "$holder" ] || ! kill -0 "$holder" 2>/dev/null; then
+        echo "inkwell: reclaiming stale simulator template lock ($INKWELL_TEMPLATE_LOCK)" >&2
+        rm -rf "$INKWELL_TEMPLATE_LOCK"
+        continue
+      fi
+    fi
+    if [ "$waited" -ge 900 ]; then
+      echo "inkwell: timed out waiting for the simulator template lock ($INKWELL_TEMPLATE_LOCK)" >&2
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  echo $$ >"$INKWELL_TEMPLATE_LOCK/pid"
+}
+
 # One-time, machine-wide: a simulator with the mic + speech-recognition
 # grants already applied (the latter needs the direct TCC.db edit noted in
 # AGENTS.md - simctl privacy has no speech-recognition service). Every
 # per-worktree simulator is cloned from this one, and simctl clone carries
 # the TCC.db over, so no worktree ever repeats the manual grant step.
 inkwell_ensure_template_sim() {
-  local udid runtime tcc_db
+  local udid rc=0
+  inkwell_acquire_template_lock || return 1
+  udid=$(inkwell_create_template_sim) || rc=$?
+  rm -rf "$INKWELL_TEMPLATE_LOCK"
+  [ "$rc" -eq 0 ] || return "$rc"
+  echo "$udid"
+}
+
+# Every step is checked and the grant is read back before this device is
+# allowed to exist under the template name: it's cached by name forever
+# afterwards, so a half-configured one would silently propagate a missing
+# grant into every worktree's clone. On any failure the device is deleted,
+# leaving the next run to start clean.
+inkwell_create_template_sim() {
+  local udid runtime tcc_db granted=""
   udid=$(inkwell_find_sim_udid "$INKWELL_TEMPLATE_SIM_NAME")
   if [ -n "$udid" ]; then
     echo "$udid"
@@ -90,14 +137,23 @@ inkwell_ensure_template_sim() {
 
   echo "inkwell: creating simulator template (one-time; grants mic + speech recognition)" >&2
   udid=$(xcrun simctl create "$INKWELL_TEMPLATE_SIM_NAME" "$INKWELL_SIM_DEVICETYPE" "$runtime") || return 1
-  xcrun simctl boot "$udid"
-  xcrun simctl bootstatus "$udid" -b >/dev/null
-  xcrun simctl privacy "$udid" grant microphone "$INKWELL_BUNDLE_ID"
-  xcrun simctl shutdown "$udid"
 
   tcc_db="$HOME/Library/Developer/CoreSimulator/Devices/$udid/data/Library/TCC/TCC.db"
-  sqlite3 "$tcc_db" \
-    "INSERT OR IGNORE INTO access (service,client,client_type,auth_value,auth_reason,auth_version) VALUES ('kTCCServiceSpeechRecognition','$INKWELL_BUNDLE_ID',0,2,3,1);"
+  if xcrun simctl boot "$udid" >&2 \
+    && xcrun simctl bootstatus "$udid" -b >/dev/null \
+    && xcrun simctl privacy "$udid" grant microphone "$INKWELL_BUNDLE_ID" >&2 \
+    && xcrun simctl shutdown "$udid" >&2 \
+    && sqlite3 "$tcc_db" \
+      "INSERT OR IGNORE INTO access (service,client,client_type,auth_value,auth_reason,auth_version) VALUES ('kTCCServiceSpeechRecognition','$INKWELL_BUNDLE_ID',0,2,3,1);" >&2; then
+    granted=$(sqlite3 "$tcc_db" \
+      "SELECT auth_value FROM access WHERE service='kTCCServiceSpeechRecognition' AND client='$INKWELL_BUNDLE_ID';" 2>/dev/null)
+  fi
+
+  if [ "$granted" != "2" ]; then
+    echo "inkwell: simulator template setup failed - mic/speech-recognition grants did not land, deleting the half-configured device" >&2
+    xcrun simctl delete "$udid" >/dev/null 2>&1 || true
+    return 1
+  fi
 
   echo "$udid"
 }
