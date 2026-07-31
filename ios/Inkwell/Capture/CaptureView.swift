@@ -60,6 +60,7 @@ struct CaptureView: View {
                     if unsyncedCount > 0 {
                         Text("\(unsyncedCount)")
                             .font(.caption.weight(.medium))
+                            .accessibilityIdentifier("unsyncedCount")
                     }
                 }
                 .foregroundStyle(InkwellPalette.ink.opacity(0.6))

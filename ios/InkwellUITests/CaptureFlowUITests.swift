@@ -17,7 +17,7 @@ final class CaptureFlowUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        attach(app.screenshot(), name: "01-idle")
+        attachScreenshot(app, name: "01-idle")
 
         let inkwell = app.otherElements["inkwell"]
         XCTAssertTrue(inkwell.waitForExistence(timeout: 5))
@@ -30,7 +30,7 @@ final class CaptureFlowUITests: XCTestCase {
 
         let transcript = app.staticTexts["transcript"]
         XCTAssertTrue(transcript.waitForExistence(timeout: 5))
-        attach(app.screenshot(), name: "02-listening")
+        attachScreenshot(app, name: "02-listening")
 
         transcript.tap()
 
@@ -39,7 +39,7 @@ final class CaptureFlowUITests: XCTestCase {
         editor.tap()
         editor.typeText("Rig a tide-powered charger for the buoy sensors so they never need a battery run.")
         dismissKeyboardTipIfPresent(app)
-        attach(app.screenshot(), name: "03-editing")
+        attachScreenshot(app, name: "03-editing")
 
         let doneButton = app.buttons["keyboardDone"]
         XCTAssertTrue(doneButton.waitForExistence(timeout: 3))
@@ -47,7 +47,7 @@ final class CaptureFlowUITests: XCTestCase {
 
         let toast = app.staticTexts["confirmationToast"]
         XCTAssertTrue(toast.waitForExistence(timeout: 3))
-        attach(app.screenshot(), name: "04-confirmation")
+        attachScreenshot(app, name: "04-confirmation")
 
         // Back to idle once the toast clears.
         XCTAssertTrue(inkwell.waitForExistence(timeout: 5))
@@ -55,28 +55,6 @@ final class CaptureFlowUITests: XCTestCase {
         app.buttons["showList"].tap()
         let firstRow = app.staticTexts["Rig a tide-powered charger for the buoy sensors so they neve…"]
         XCTAssertTrue(firstRow.waitForExistence(timeout: 5))
-        attach(app.screenshot(), name: "05-list")
-    }
-
-    private func dismissKeyboardTipIfPresent(_ app: XCUIApplication) {
-        let continueButton = app.buttons["Continue"]
-        if continueButton.waitForExistence(timeout: 1) {
-            continueButton.tap()
-        }
-    }
-
-    private func dismissSystemAlertIfPresent(_ app: XCUIApplication) {
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let allowButton = springboard.buttons["Allow"]
-        if allowButton.waitForExistence(timeout: 2) {
-            allowButton.tap()
-        }
-    }
-
-    private func attach(_ screenshot: XCUIScreenshot, name: String) {
-        let attachment = XCTAttachment(screenshot: screenshot)
-        attachment.name = name
-        attachment.lifetime = .keepAlways
-        add(attachment)
+        attachScreenshot(app, name: "05-list")
     }
 }
