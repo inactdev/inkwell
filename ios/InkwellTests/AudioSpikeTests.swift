@@ -110,6 +110,16 @@ final class AudioSpikeTests: XCTestCase {
             normalized.contains("submarine") || normalized.contains("hull") || normalized.contains("dive"),
             "transcript should contain recognizable words from the known source clip, got: \(finalTranscript)"
         )
+
+        // What the one tap actually produced, printed so the spike's result is
+        // legible in a test log rather than only as a green checkmark.
+        print("""
+        SPIKE EVIDENCE | one tap, two consumers
+        SPIKE EVIDENCE | source clip: sample-speech.wav, \(String(format: "%.2f", Double(sourceFile.length) / renderFormat.sampleRate))s
+        SPIKE EVIDENCE | consumer 1 (AVAudioFile): \(writtenFile.length) frames, \
+        \(String(format: "%.2f", writtenDurationSeconds))s, \(fileSize) bytes
+        SPIKE EVIDENCE | consumer 2 (SFSpeechRecognizer): "\(finalTranscript)"
+        """)
     }
 
     /// Sanity check that the production path - tapping the real hardware
