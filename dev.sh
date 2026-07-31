@@ -31,14 +31,23 @@ cd "$INKWELL_WORKTREE"
 
 # Polls the backend's own healthcheck endpoint (same one docker-compose.yml
 # uses) so the app isn't installed and launched against a backend that isn't
-# actually answering yet.
+# actually answering yet. Bounded generously rather than tightly: the very
+# first run pulls a base image and builds the backend image, which routinely
+# takes minutes. What keeps that from being a long stall when something is
+# actually wrong is watching the compose process itself - if it's gone, the
+# backend is never arriving and there's nothing left to wait for.
 inkwell_wait_for_backend() {
-  local tries=0
-  while [ "$tries" -lt 60 ]; do
+  local compose_pid=$1 tries=0
+  while [ "$tries" -lt 600 ]; do
     curl -fsS -o /dev/null "$INKWELL_BACKEND_URL/inklings" 2>/dev/null && return 0
+    if ! kill -0 "$compose_pid" 2>/dev/null; then
+      echo "inkwell: the backend exited before it became reachable" >&2
+      return 1
+    fi
     tries=$((tries + 1))
     sleep 1
   done
+  echo "inkwell: gave up waiting for the backend after ${tries}s" >&2
   return 1
 }
 
@@ -69,9 +78,18 @@ inkwell_build_install_launch() {
     echo "inkwell: built app not found at $app_path - not installing" >&2
     return 1
   fi
-  xcrun simctl install "$udid" "$app_path"
-  open -a Simulator
-  xcrun simctl launch "$udid" "$INKWELL_BUNDLE_ID" >/dev/null
+  if ! xcrun simctl install "$udid" "$app_path"; then
+    echo "inkwell: installing Inkwell on $INKWELL_SIM_NAME failed - not launching" >&2
+    return 1
+  fi
+  open -a Simulator || true
+  # --terminate-running-process, or a copy left running by an earlier ./dev.sh
+  # is merely brought to the front: the bundle on disk would be the build just
+  # installed while the pixels on screen are still the previous one.
+  if ! xcrun simctl launch --terminate-running-process "$udid" "$INKWELL_BUNDLE_ID" >/dev/null; then
+    echo "inkwell: launching Inkwell on $INKWELL_SIM_NAME failed" >&2
+    return 1
+  fi
   echo "inkwell: Inkwell launched on $INKWELL_SIM_NAME" >&2
 }
 
@@ -102,19 +120,23 @@ case "$cmd" in
     fi
 
     # Backgrounded rather than exec'd, so there's a point after the backend
-    # starts to build/install/launch the app - but still in the same process
-    # group as this script, so a Ctrl-C at the terminal reaches it directly
-    # exactly as it did when this was exec'd. The trap is belt-and-suspenders
-    # for invocations where that isn't true (e.g. run via another wrapper).
+    # starts to build/install/launch the app. That costs the plain signal
+    # path: bash sets SIGINT to ignored for asynchronous commands in a script,
+    # so Ctrl-C only still reaches compose because compose re-arms SIGINT
+    # itself - not something this script controls. The trap is therefore
+    # load-bearing, not belt-and-suspenders. It also waits for the teardown it
+    # started: a signal makes the `wait` below return immediately, so without
+    # waiting here the prompt comes back while containers are still stopping
+    # and the next ./dev.sh races the leftovers over the same project.
     docker compose up --build "$@" &
     compose_pid=$!
-    trap 'kill "$compose_pid" 2>/dev/null || true' INT TERM
+    trap 'trap - INT TERM; kill "$compose_pid" 2>/dev/null || true; wait "$compose_pid" 2>/dev/null || true; exit 130' INT TERM
 
     if [ "$ios_ready" -eq 1 ]; then
-      if inkwell_wait_for_backend; then
+      if inkwell_wait_for_backend "$compose_pid"; then
         inkwell_build_install_launch "$udid" || true
       else
-        echo "inkwell: backend did not become reachable - skipping app launch" >&2
+        echo "inkwell: backend not reachable - skipping app build, install, and launch" >&2
       fi
     fi
 
@@ -179,7 +201,9 @@ EOF
           # storage) keeps the window the test's to spend.
           container=$(xcrun simctl get_app_container "$udid" "$INKWELL_BUNDLE_ID" data 2>/dev/null) || container=""
           if [ -n "$container" ] && [ -d "$container/Documents/Inklings" ]; then
-            capture_count=$(find "$container/Documents/Inklings" -type f | wc -l | tr -d ' ')
+            # One inkling is a .json plus, when it was a voice capture, a
+            # sibling .m4a - counting every file would report double.
+            capture_count=$(find "$container/Documents/Inklings" -type f -name '*.json' | wc -l | tr -d ' ')
             echo "inkwell: clearing $capture_count captured inkling(s) from $INKWELL_SIM_NAME before OfflineSyncUITests runs" >&2
             rm -rf "$container/Documents/Inklings"
           fi
