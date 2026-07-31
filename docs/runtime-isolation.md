@@ -88,7 +88,11 @@ registry to update - the worktree's own path *is* the registry key.
                           attempt was built and tested in a sandboxed session with no
                           real display and was never visually confirmed to work - treat
                           "which window ends up frontmost in the two-lane case" as
-                          unverified until checked on a real screen.
+                          unverified until checked on a real screen. dev.sh prints on
+                          stderr which outcome it got (raise issued, no matching window,
+                          the window query stalling past its 5s watchdog, or an
+                          osascript error), so whoever does that check can tell a wrong
+                          window from a raise that never ran.
 ./dev.sh up -d           the same run, app on screen included, except the backend is left
                           running in the background and the command returns rather than
                           holding the terminal (`--detach`/`--wait` behave the same way).

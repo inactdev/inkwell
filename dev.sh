@@ -124,30 +124,61 @@ inkwell_launch_when_backend_ready() {
 # for minutes - which is why this is wrapped in a hard watchdog rather than
 # left to run free. A wrong-frontmost-window miss is a far smaller problem
 # than turning "one command, terminal comes back" into "one command that
-# might never return," so the watchdog is not optional. The mechanism
-# (Simulator's own scripting dictionary, index-based window raise) is the
-# standard approach for this and should work on a real screen - someone
-# with actual GUI access needs to confirm it before trusting this comment
-# further.
+# might never return," so the watchdog is not optional. It is also
+# self-contained: its `sleep` fires the kill only when it actually wins the
+# race, and the watchdog's own output goes nowhere, so nothing it spawns can
+# outlive this function still holding the stdout dev.sh inherited - `out=$(
+# ./dev.sh up -d )` returns when dev.sh does, not five seconds later.
+#
+# Which of the outcomes happened is reported on stderr rather than swallowed,
+# because that is the only signal whoever verifies this on a real screen has:
+# "the window query stalled" and "the raise ran and picked the wrong window"
+# call for completely different follow-ups. Note that osascript exiting 0
+# means the raise was *issued*, not that the right window came forward - the
+# script reports which window it matched, and nothing here can see the screen.
+# The mechanism (Simulator's own scripting dictionary, index-based window
+# raise) is the standard approach for this and should work on a real screen -
+# someone with actual GUI access needs to confirm it before trusting this
+# comment further.
 inkwell_focus_sim_window() {
-  local sim_name=$1 osa_pid watchdog_pid
-  osascript >/dev/null 2>&1 <<OSA &
+  local sim_name=$1 osa_pid watchdog_pid osa_status=0 osa_out result
+  osa_out="${TMPDIR:-/tmp}/inkwell-focus-$INKWELL_PROJECT_NAME.out"
+  osascript >"$osa_out" 2>&1 <<OSA &
 tell application "Simulator"
   activate
   repeat with w in windows
     if name of w contains "$sim_name" then
       set index of w to 1
-      exit repeat
+      return "raised"
     end if
   end repeat
 end tell
+return "no-window"
 OSA
   osa_pid=$!
-  ( sleep 5; kill "$osa_pid" 2>/dev/null ) &
+  ( sleep 5 && kill "$osa_pid" 2>/dev/null ) >/dev/null 2>&1 &
   watchdog_pid=$!
-  wait "$osa_pid" 2>/dev/null
-  kill "$watchdog_pid" 2>/dev/null
-  wait "$watchdog_pid" 2>/dev/null
+  wait "$osa_pid" 2>/dev/null || osa_status=$?
+  pkill -P "$watchdog_pid" 2>/dev/null || true
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  result=$(head -n 1 "$osa_out" 2>/dev/null || true)
+  rm -f "$osa_out"
+  case "$osa_status:$result" in
+    0:raised)
+      echo "inkwell: told Simulator to bring $sim_name's window to the front" >&2
+      ;;
+    0:*)
+      echo "inkwell: Simulator has no window named for $sim_name - its window may not be frontmost" >&2
+      ;;
+    143:*)
+      echo "inkwell: Simulator's window list did not answer within 5s - $sim_name's window may not be frontmost" >&2
+      ;;
+    *)
+      echo "inkwell: could not raise $sim_name's Simulator window (osascript exit $osa_status: ${result:-no output})" >&2
+      ;;
+  esac
+  return 0
 }
 
 # Builds (incrementally - xcodebuild itself skips work that's already up to
