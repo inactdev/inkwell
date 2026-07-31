@@ -1,0 +1,10 @@
+# Xcode / iOS build artifacts
+ios/.build/
+ios/Inkwell.xcodeproj/
+ios/DerivedData/
+ios/Inkwell/Info.plist
+*.xcuserstate
+xcuserdata/
+
+# macOS
+.DS_Store

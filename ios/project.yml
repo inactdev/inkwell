@@ -1,0 +1,58 @@
+name: Inkwell
+options:
+  bundleIdPrefix: com.inkwell
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGNING_REQUIRED: NO
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  Inkwell:
+    type: application
+    platform: iOS
+    sources:
+      - path: Inkwell
+    info:
+      path: Inkwell/Info.plist
+      properties:
+        UILaunchScreen: {}
+        NSMicrophoneUsageDescription: "Inkwell listens when you tap the well so you can capture an idea by speaking."
+        NSSpeechRecognitionUsageDescription: "Inkwell transcribes your voice on-device as you speak, so words appear as you talk."
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.inkwell.app
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_EMIT_LOC_STRINGS: YES
+
+  InkwellTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: InkwellTests
+    dependencies:
+      - target: Inkwell
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.inkwell.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Inkwell:
+    build:
+      targets:
+        Inkwell: all
+        InkwellTests: [test]
+    test:
+      targets:
+        - InkwellTests
+    run:
+      config: Debug
