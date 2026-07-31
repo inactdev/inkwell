@@ -16,7 +16,7 @@ final class CaptureViewModel {
     var authorizationDenied = false
     var saveFailed = false
 
-    private let engine: AudioCaptureEngine
+    private let engine: any CaptureEngine
     private let store: InklingStore
     /// Set synchronously so a second tap can't start a second capture while
     /// the first is still awaiting authorization.
@@ -47,9 +47,22 @@ final class CaptureViewModel {
         !committedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !liveTranscript.isEmpty
     }
 
-    init(store: InklingStore, engine: AudioCaptureEngine = AudioCaptureEngine()) {
+    init(store: InklingStore, engine: any CaptureEngine = AudioCaptureEngine()) {
         self.store = store
         self.engine = engine
+        engine.setInterruptionHandler { [weak self] in
+            Task { @MainActor in self?.captureWasInterrupted() }
+        }
+    }
+
+    /// The system took the audio session mid-segment (a call, Siri, an
+    /// alarm). Nothing further will arrive, so fold what was heard into the
+    /// draft and hand it to the keyboard rather than leaving the well
+    /// rippling at a microphone that is no longer ours.
+    private func captureWasInterrupted() {
+        guard mode == .listening else { return }
+        commitLiveTranscript()
+        mode = .editing
     }
 
     /// Tapping the well: start listening from idle/editing, or - while
@@ -84,7 +97,7 @@ final class CaptureViewModel {
         isStartingListening = true
         Task { @MainActor in
             defer { isStartingListening = false }
-            let authorized = await AudioCaptureEngine.requestAuthorization()
+            let authorized = await engine.requestAuthorization()
             guard authorized else {
                 authorizationDenied = true
                 return
@@ -143,7 +156,12 @@ final class CaptureViewModel {
             try store.save(inkling)
         } catch {
             // Keep the words on screen: nothing was persisted, so resetting
-            // here would lose the capture for real.
+            // here would lose the capture for real. Dictation is already
+            // stopped by this point, so drop to editing rather than leaving
+            // the screen claiming to listen to an engine that isn't running -
+            // that state can't be left by any control except the well, and
+            // it makes the retry the alert asks for directly typeable.
+            mode = .editing
             saveFailed = true
             return
         }

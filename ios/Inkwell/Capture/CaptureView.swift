@@ -16,25 +16,37 @@ struct CaptureView: View {
         ZStack {
             InkwellPalette.parchment.ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                header
+            // The column is taller than what's left once the keyboard takes
+            // half the screen, and taller than a small phone even without
+            // one. Laid out directly, it hands its full height back to the
+            // ZStack, and the root then centres that overflow - which is what
+            // pushed the wordmark and tray icon out of the safe area and onto
+            // the status bar. Overlaying it on a view that keeps the size it
+            // was offered decouples the two: the header stays pinned below
+            // the status bar and the overflow can only run downward, behind
+            // the keyboard, where the toolbar accessory already carries
+            // Discard and Done.
+            Color.clear.overlay(alignment: .top) {
+                VStack(spacing: 0) {
+                    header
 
-                Spacer()
+                    Spacer()
 
-                InkwellView(isRecording: viewModel.isListening, inputLevel: viewModel.inputLevel)
-                    .onTapGesture { viewModel.tapInkwell() }
-                    .accessibilityLabel(viewModel.isListening ? "Stop and edit" : "Start capturing")
-                    .accessibilityIdentifier("inkwell")
+                    InkwellView(isRecording: viewModel.isListening, inputLevel: viewModel.inputLevel)
+                        .onTapGesture { viewModel.tapInkwell() }
+                        .accessibilityLabel(viewModel.isListening ? "Stop and edit" : "Start capturing")
+                        .accessibilityIdentifier("inkwell")
 
-                promptOrTranscript
-                    .padding(.top, 28)
-                    .padding(.horizontal, 28)
+                    promptOrTranscript
+                        .padding(.top, 28)
+                        .padding(.horizontal, 28)
 
-                Spacer()
+                    Spacer()
 
-                footer
+                    footer
+                }
+                .padding(.bottom, 12)
             }
-            .padding(.bottom, 12)
             .alert("That one didn't save", isPresented: $viewModel.saveFailed) {
                 Button("OK", role: .cancel) {}
             } message: {
@@ -45,12 +57,6 @@ struct CaptureView: View {
                 confirmationToast
             }
         }
-        // The keyboard toolbar accessory (see the .editing case below) keeps
-        // Done reachable without SwiftUI's automatic keyboard avoidance -
-        // that avoidance was shifting this whole layout upward when the
-        // keyboard appeared, pushing the header above the safe area and
-        // into the status bar.
-        .ignoresSafeArea(.keyboard, edges: .bottom)
         .alert("Inkwell needs your voice", isPresented: $viewModel.authorizationDenied) {
             Button("OK", role: .cancel) {}
         } message: {

@@ -41,8 +41,9 @@ which reaches the Mac's own backend directly from the simulator - override with 
 `INKWELL_BACKEND_URL` environment variable if you're running the backend elsewhere. Grant
 microphone and speech recognition access when prompted to use dictation; typing works either way.
 
-Test suites: `InkwellTests` (the audio spike proof) and `InkwellUITests` (the capture flow and
-the offline-then-sync scenario, driven through the real UI). Run via Xcode's Test navigator or
+Test suites: `InkwellTests` (the audio spike proof, plus the capture state-machine regressions -
+duplicate inklings, a failed save, an interrupted segment) and `InkwellUITests` (the capture flow
+and the offline-then-sync scenario, driven through the real UI). Run via Xcode's Test navigator or
 `xcodebuild test -only-testing:<TargetName>/<ClassName>`.
 
 ## Why Go for the backend
