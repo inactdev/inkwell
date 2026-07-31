@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 )
 
 func main() {
@@ -21,8 +22,20 @@ func main() {
 	}
 
 	server := &Server{store: store}
+	// Explicit timeouts rather than the zero-value server: the listen
+	// address is configurable, so this can be reachable off-host and must
+	// not let a stalled connection hold a request open indefinitely.
+	httpServer := &http.Server{
+		Addr:              *addr,
+		Handler:           server.routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       2 * time.Minute,
+		WriteTimeout:      1 * time.Minute,
+		IdleTimeout:       2 * time.Minute,
+	}
+
 	log.Printf("inkwell backend listening on %s, storage at %s", *addr, *storageDir)
-	if err := http.ListenAndServe(*addr, server.routes()); err != nil {
+	if err := httpServer.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }

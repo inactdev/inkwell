@@ -70,6 +70,20 @@ func (s *Store) hasStagedChanges() bool {
 // when checking whether an inkling has an utterance recording alongside it.
 var audioExtensions = []string{".m4a", ".caf", ".wav"}
 
+// normalizeAudioExt maps the client-supplied filename extension onto the
+// allowlist above. The extension becomes part of a path, so it is never
+// trusted verbatim; anything unrecognized is stored as .m4a, which is also
+// what keeps findAudioFile (and therefore hasAudio) able to see it again.
+func normalizeAudioExt(ext string) string {
+	lower := strings.ToLower(strings.TrimSpace(ext))
+	for _, allowed := range audioExtensions {
+		if lower == allowed {
+			return allowed
+		}
+	}
+	return audioExtensions[0]
+}
+
 func (s *Store) findAudioFile(base string) string {
 	for _, ext := range audioExtensions {
 		if _, err := os.Stat(filepath.Join(s.dir, base+ext)); err == nil {
@@ -127,9 +141,7 @@ func (s *Store) Upsert(ink Inkling, audio []byte, audioExt string) (created bool
 	}
 
 	if len(audio) > 0 {
-		if audioExt == "" {
-			audioExt = ".m4a"
-		}
+		audioExt = normalizeAudioExt(audioExt)
 		audioPath := filepath.Join(s.dir, base+audioExt)
 		if err := os.WriteFile(audioPath, audio, 0o644); err != nil {
 			return false, fmt.Errorf("write audio: %w", err)

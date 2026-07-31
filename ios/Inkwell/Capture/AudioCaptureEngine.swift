@@ -5,8 +5,12 @@ import Speech
 /// on-device speech recognition (for live words) and a written audio file
 /// (the immutable utterance). This is the audio spike the product contract
 /// asked to have proven before anything else was built.
+/// The tap block runs on the audio render thread and the recognizer calls
+/// back on its own queue; both hand their results to the main actor rather
+/// than touching observed state directly, which is what makes this safe to
+/// hold and read from SwiftUI.
 @Observable
-final class AudioCaptureEngine {
+final class AudioCaptureEngine: @unchecked Sendable {
 
     enum CaptureError: Error, Equatable {
         case recognizerUnavailable
@@ -20,12 +24,15 @@ final class AudioCaptureEngine {
     /// 0...1, driven by the same tap, for the inkwell's reaction to real audio.
     private(set) var inputLevel: Float = 0
 
-    private let audioEngine: AVAudioEngine
-    private let speechRecognizer: SFSpeechRecognizer?
-    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
-    private var audioFile: AVAudioFile?
-    private var onFinalTranscript: ((String) -> Void)?
+    @ObservationIgnored private let audioEngine: AVAudioEngine
+    @ObservationIgnored private let speechRecognizer: SFSpeechRecognizer?
+    @ObservationIgnored private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    @ObservationIgnored private var recognitionTask: SFSpeechRecognitionTask?
+    @ObservationIgnored private var audioFile: AVAudioFile?
+    @ObservationIgnored private var onFinalTranscript: ((String) -> Void)?
+    /// Bumped per capture segment so a callback from a segment that has
+    /// already been stopped can't publish over the current one's state.
+    @ObservationIgnored private var generation = 0
 
     init(audioEngine: AVAudioEngine = AVAudioEngine(), locale: Locale = Locale(identifier: "en-US")) {
         self.audioEngine = audioEngine
@@ -72,6 +79,8 @@ final class AudioCaptureEngine {
         }
         recognitionRequest = request
         transcript = ""
+        generation &+= 1
+        let generation = self.generation
 
         let format = node.outputFormat(forBus: bus)
         let file = try makeAudioFile(at: fileURL, format: format)
@@ -80,9 +89,15 @@ final class AudioCaptureEngine {
         node.removeTap(onBus: bus)
         node.installTap(onBus: bus, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             // The one tap, feeding both consumers from the same buffer.
-            self?.recognitionRequest?.append(buffer)
-            try? self?.audioFile?.write(from: buffer)
-            self?.updateInputLevel(from: buffer)
+            // Both are captured locals, never read back off `self`, so the
+            // render thread never touches observed state.
+            request.append(buffer)
+            try? file.write(from: buffer)
+            guard let self, let level = Self.level(of: buffer) else { return }
+            Task { @MainActor in
+                guard self.isRecording, self.generation == generation else { return }
+                self.inputLevel = level
+            }
         }
 
         if !audioEngine.isRunning {
@@ -93,14 +108,16 @@ final class AudioCaptureEngine {
 
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self else { return }
-            if let result {
-                self.transcript = result.bestTranscription.formattedString
-                if result.isFinal {
+            let text = result?.bestTranscription.formattedString
+            let settled = result?.isFinal == true || error != nil
+            Task { @MainActor in
+                guard self.generation == generation else { return }
+                if let text {
+                    self.transcript = text
+                }
+                if settled {
                     self.onFinalTranscript?(self.transcript)
                 }
-            }
-            if error != nil {
-                self.onFinalTranscript?(self.transcript)
             }
         }
     }
@@ -115,6 +132,8 @@ final class AudioCaptureEngine {
         audioEngine.inputNode.removeTap(onBus: 0)
         recognitionRequest?.endAudio()
         recognitionTask?.finish()
+        recognitionRequest = nil
+        recognitionTask = nil
         audioFile = nil
         isRecording = false
         inputLevel = 0
@@ -138,16 +157,18 @@ final class AudioCaptureEngine {
         }
     }
 
-    private func updateInputLevel(from buffer: AVAudioPCMBuffer) {
-        guard let channelData = buffer.floatChannelData else { return }
+    /// Pure buffer math, safe to run on the render thread. Nil means this
+    /// buffer carries nothing to measure, so the level should be left as-is.
+    private static func level(of buffer: AVAudioPCMBuffer) -> Float? {
+        guard let channelData = buffer.floatChannelData else { return nil }
         let frameCount = Int(buffer.frameLength)
-        guard frameCount > 0 else { return }
+        guard frameCount > 0 else { return nil }
         var sum: Float = 0
         let samples = channelData[0]
         for i in 0..<frameCount {
             sum += samples[i] * samples[i]
         }
         let rms = sqrt(sum / Float(frameCount))
-        inputLevel = min(1, rms * 8)
+        return min(1, rms * 8)
     }
 }

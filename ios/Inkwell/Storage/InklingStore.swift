@@ -44,11 +44,14 @@ final class InklingStore {
             .sorted { $0.createdAt > $1.createdAt }
     }
 
+    /// Throws if the record did not reach disk. The in-memory list is only
+    /// updated after the write succeeds, so nothing is ever shown as saved
+    /// that a `reload()` would then silently drop.
     @discardableResult
-    func save(_ inkling: Inkling) -> Inkling {
-        let encoder = Self.makeEncoder()
-        guard let data = try? encoder.encode(inkling) else { return inkling }
-        try? data.write(to: jsonURL(for: inkling.id), options: .atomic)
+    func save(_ inkling: Inkling) throws -> Inkling {
+        let data = try Self.makeEncoder().encode(inkling)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try data.write(to: jsonURL(for: inkling.id), options: .atomic)
 
         if let index = inklings.firstIndex(where: { $0.id == inkling.id }) {
             inklings[index] = inkling

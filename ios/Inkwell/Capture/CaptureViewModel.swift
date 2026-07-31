@@ -14,9 +14,13 @@ final class CaptureViewModel {
     private(set) var draftID = UUID()
     var showConfirmation = false
     var authorizationDenied = false
+    var saveFailed = false
 
     private let engine: AudioCaptureEngine
     private let store: InklingStore
+    /// Set synchronously so a second tap can't start a second capture while
+    /// the first is still awaiting authorization.
+    private var isStartingListening = false
 
     var liveTranscript: String { engine.transcript }
     var inputLevel: Float { engine.inputLevel }
@@ -66,8 +70,10 @@ final class CaptureViewModel {
     }
 
     private func startListening() {
-        guard mode != .listening else { return }
+        guard mode != .listening, !isStartingListening else { return }
+        isStartingListening = true
         Task { @MainActor in
+            defer { isStartingListening = false }
             let authorized = await AudioCaptureEngine.requestAuthorization()
             guard authorized else {
                 authorizationDenied = true
@@ -97,18 +103,20 @@ final class CaptureViewModel {
     /// Saves instantly to disk, no network involved, then resets for the next capture.
     func done() {
         commitLiveTranscript()
-        let wasRecording = engine.isRecording
         engine.stopCapturing()
 
         let text = committedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
-            reset()
+            discardDraft()
             return
         }
 
         let now = Date()
         let audioURL = store.audioURL(for: draftID)
-        let hasAudio = wasRecording && FileManager.default.fileExists(atPath: audioURL.path)
+        // `draftID` is fresh per capture, so a file at this URL can only be
+        // this draft's own recording - including when dictation was stopped
+        // earlier to edit the words by hand.
+        let hasAudio = FileManager.default.fileExists(atPath: audioURL.path)
         let inkling = Inkling(
             id: draftID,
             text: text,
@@ -117,7 +125,14 @@ final class CaptureViewModel {
             audioFileName: hasAudio ? audioURL.lastPathComponent : nil,
             syncedAt: nil
         )
-        store.save(inkling)
+        do {
+            try store.save(inkling)
+        } catch {
+            // Keep the words on screen: nothing was persisted, so resetting
+            // here would lose the capture for real.
+            saveFailed = true
+            return
+        }
 
         showConfirmation = true
         Task { @MainActor in
@@ -129,6 +144,14 @@ final class CaptureViewModel {
 
     func discard() {
         engine.stopCapturing()
+        discardDraft()
+    }
+
+    /// Resets after a draft nothing will ever reference again, taking its
+    /// recording with it - otherwise every discarded capture would leave an
+    /// orphaned .m4a behind forever.
+    private func discardDraft() {
+        try? FileManager.default.removeItem(at: store.audioURL(for: draftID))
         reset()
     }
 

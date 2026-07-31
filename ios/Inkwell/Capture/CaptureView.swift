@@ -35,6 +35,11 @@ struct CaptureView: View {
                 footer
             }
             .padding(.bottom, 12)
+            .alert("That one didn't save", isPresented: $viewModel.saveFailed) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Your words are still here. Tap Done again in a moment.")
+            }
 
             if viewModel.showConfirmation {
                 confirmationToast

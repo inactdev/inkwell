@@ -137,6 +137,43 @@ func TestUpsertWithAudioMarksHasAudio(t *testing.T) {
 	}
 }
 
+func TestUpsertConstrainsAudioExtensionToTheAllowlist(t *testing.T) {
+	requireGit(t)
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	ink := Inkling{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", Created: "2026-07-31T08:11:00Z", Updated: "2026-07-31T08:11:00Z", Text: "Idea with audio."}
+	if _, err := store.Upsert(ink, []byte("fake audio bytes"), "/../../escaped.sh"); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	entries, err := os.ReadDir(filepath.Dir(dir))
+	if err != nil {
+		t.Fatalf("read parent of storage dir: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != filepath.Base(dir) {
+			t.Errorf("unexpected entry written outside the storage dir: %s", e.Name())
+		}
+	}
+
+	audioPath := filepath.Join(dir, "idea-with-audio-aaaaaaaa.m4a")
+	if _, err := os.Stat(audioPath); err != nil {
+		t.Errorf("expected audio stored under an allowlisted extension at %s: %v", audioPath, err)
+	}
+
+	list, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 1 || !list[0].HasAudio {
+		t.Errorf("expected exactly one inkling with hasAudio=true, got %+v", list)
+	}
+}
+
 func countMarkdown(entries []os.DirEntry) int {
 	n := 0
 	for _, e := range entries {

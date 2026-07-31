@@ -6,6 +6,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -126,6 +128,40 @@ func TestPostSameIDTwiceUpdatesNotDuplicates(t *testing.T) {
 	}
 	if inklings[0].Text != "Revised version." {
 		t.Errorf("expected latest text to win, got %q", inklings[0].Text)
+	}
+}
+
+func TestPostRejectsIDsThatAreNotUUIDs(t *testing.T) {
+	server := newTestServer(t)
+	handler := server.routes()
+
+	// The id becomes part of a filename, so anything that could steer a
+	// write out of the storage directory must never reach the store.
+	parent := filepath.Dir(server.store.dir)
+	before, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatalf("read parent of storage dir: %v", err)
+	}
+
+	for _, id := range []string{"/../../escaped", "../escaped", "..", "not-a-uuid", "3f29f1de"} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, multipartRequest(t, map[string]string{
+			"id":      id,
+			"created": "2026-07-31T08:11:00Z",
+			"updated": "2026-07-31T08:11:00Z",
+			"text":    "Escape attempt.",
+		}, []byte("fake-audio")))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("id %q: expected 400, got %d: %s", id, rec.Code, rec.Body.String())
+		}
+	}
+
+	after, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatalf("re-read parent of storage dir: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Errorf("expected nothing written outside the storage dir, got %d new entries", len(after)-len(before))
 	}
 }
 

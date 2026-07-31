@@ -18,6 +18,15 @@ type Inkling struct {
 
 var nonWord = regexp.MustCompile(`[^a-z0-9]+`)
 
+// uuidPattern is the id shape docs/api-contract.md declares. Enforcing it at
+// the edge is what keeps `id` - which becomes part of a filename - from ever
+// carrying a path separator or `..` into the storage directory.
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+func isValidID(id string) bool {
+	return uuidPattern.MatchString(id)
+}
+
 // slugify turns the transcript into a short, human-readable filename
 // fragment. It never changes for a given inkling once written - the id
 // prefix appended by the caller is what keeps it unique.

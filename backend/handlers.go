@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -21,8 +22,19 @@ func (s *Server) routes() http.Handler {
 	return mux
 }
 
+// maxRequestBytes caps a single upload - a captured utterance plus its
+// transcript, never anything close to this - so a hostile or broken client
+// can't stream an unbounded body into memory, onto disk, and into git history.
+const maxRequestBytes = 64 << 20
+
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "could not parse multipart form: "+err.Error())
 		return
 	}
@@ -34,6 +46,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	if !isValidID(id) {
+		writeError(w, http.StatusBadRequest, "id must be a UUID")
 		return
 	}
 	if strings.TrimSpace(text) == "" {

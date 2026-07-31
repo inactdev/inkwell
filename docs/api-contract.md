@@ -24,7 +24,9 @@ Sent by the phone and returned by the backend in list responses:
 }
 ```
 
-- `id` - UUID string, uppercase or lowercase accepted, stored as given.
+- `id` - UUID string, uppercase or lowercase accepted, stored as given. The backend rejects
+  anything that isn't UUID-shaped with a `400`: the id becomes part of a filename, so it is never
+  allowed to carry a path separator.
 - `created` / `updated` - RFC 3339 / ISO 8601 UTC timestamps (`2026-07-31T08:11:00Z`).
 - `text` - the full transcript, as edited on the phone. This is the inkling's body.
 - `hasAudio` - whether an utterance recording accompanies this inkling. Response-only field;
@@ -64,7 +66,8 @@ Response: `200 OK` (updated) or `201 Created` (new), JSON body:
 indicator.
 
 Errors: `400` for a malformed request (missing required part, unparseable timestamp, empty
-`id`/`text`). `5xx` for anything on the backend's side (disk full, git failure, etc.) - the phone
+`id`/`text`, an `id` that isn't a UUID). `413` if the body exceeds 64 MiB, far above any real
+capture. `5xx` for anything on the backend's side (disk full, git failure, etc.) - the phone
 treats both `5xx` and a failed connection identically: leave the inkling unsynced and retry later.
 
 ### `GET /inklings` - list everything the backend has
@@ -83,9 +86,11 @@ it (the contract's own decade-ceiling measurement is 2.7MB / a few thousand file
 directory scan per request is fast enough not to need an index). A future lane building the real
 browse experience may want to add query params here; that's additive, not a breaking change.
 
-There's no dedicated health-check endpoint. The sync engine uses a `GET /inklings` response as
-its reachability probe - if it fails, the backend is unreachable and everything is treated
-identically to being offline.
+There's no dedicated health-check endpoint, and the sync engine never probes one. It learns
+reachability two ways: `NWPathMonitor` tells it when the device has a network path at all, and
+the outcome of each `POST /inklings` tells it whether the backend answered. A refused connection,
+a timeout, and a `5xx` are all treated identically to being offline - leave the inkling unsynced
+and try again on the next pass.
 
 ## Offline and retry semantics
 
@@ -133,8 +138,9 @@ Rig a tide-powered charger for the buoy sensors so they never need a battery run
   even if the text does - the filename is a label, not a lookup key.
 - `<id-prefix>` is the first 8 characters of `id`, appended so two inklings with a similar
   opening phrase don't collide on filename.
-- If audio was sent, it's written alongside as `<slug>-<id-prefix>.m4a` (or whatever extension
-  the phone sent) in the same directory.
+- If audio was sent, it's written alongside as `<slug>-<id-prefix>.m4a` in the same directory.
+  The extension the phone sent is honored only if it's one the backend recognizes (`.m4a`,
+  `.caf`, `.wav`); anything else is stored as `.m4a`, since the extension lands in a path.
 - Every write is followed by a `git add` + `git commit` in the storage directory (which the
   backend `git init`s on first run if it isn't already a repo). One commit per `POST`.
 

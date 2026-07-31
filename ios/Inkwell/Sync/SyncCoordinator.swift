@@ -96,7 +96,9 @@ final class SyncCoordinator {
             }
             var updated = inkling
             updated.syncedAt = syncedDate
-            store.save(updated)
+            // A failed write leaves it unsynced on device; the next pass
+            // re-POSTs it, which the backend upserts idempotently.
+            _ = try? store.save(updated)
         } catch {
             // Offline or the backend is down - quiet, retried next pass.
         }
