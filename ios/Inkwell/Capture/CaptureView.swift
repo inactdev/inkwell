@@ -45,6 +45,12 @@ struct CaptureView: View {
                 confirmationToast
             }
         }
+        // The keyboard toolbar accessory (see the .editing case below) keeps
+        // Done reachable without SwiftUI's automatic keyboard avoidance -
+        // that avoidance was shifting this whole layout upward when the
+        // keyboard appeared, pushing the header above the safe area and
+        // into the status bar.
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .alert("Inkwell needs your voice", isPresented: $viewModel.authorizationDenied) {
             Button("OK", role: .cancel) {}
         } message: {
