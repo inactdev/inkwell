@@ -27,8 +27,10 @@ container per worktree.
 ./dev.sh
 ```
 
-Starts the backend in the foreground, on this worktree's own port and storage - no more typing
-than `go run .` was. `./dev.sh info` prints exactly what got derived; `./dev.sh down` stops it.
+Regenerates the Xcode project with this worktree's backend URL baked in, ensures and boots this
+worktree's simulator (a 1-3GB `simctl clone` the first time), then starts the backend in the
+foreground, on this worktree's own port and storage - no more typing than `go run .` was. The iOS
+half is best-effort: without Xcode/xcodegen it says so and brings up the backend alone. `./dev.sh info` prints exactly what got derived; `./dev.sh down` stops it.
 `go run .` from `backend/` (see `backend/README.md`) still works for quick backend-only iteration,
 just without the isolation - fine for a single lane, not for running two at once.
 
@@ -65,8 +67,12 @@ duplicate inklings, a failed save, interrupted segments) and `InkwellUITests` (t
 the offline-then-sync scenario, and a long dictation staying scrollable on screen, driven through
 the real UI). `./dev.sh ios test` builds and runs them against a simulator device cloned just for
 this worktree, so two worktrees testing at once don't share a device, DerivedData, or app install
-(see `docs/runtime-isolation.md`) - equivalent to Xcode's Test navigator or
-`xcodebuild test -only-testing:<TargetName>/<ClassName>`, minus the collision risk.
+(see `docs/runtime-isolation.md`). For everything except the offline-sync test that's equivalent to
+Xcode's Test navigator or `xcodebuild test -only-testing:<TargetName>/<ClassName>`, minus the
+collision risk. `OfflineSyncUITests` is the exception and needs `./dev.sh ios test` specifically: it
+runs against `tools/blackhole-proxy`, which only that command launches, so from the Test navigator
+or bare `xcodebuild` the proxy URL is baked into the scheme with nothing listening on it and the
+test fails waiting for a capture that can never sync.
 
 That simulator cleans itself up: `./dev.sh down` deletes it, and so does simply shutting the device
 down (quitting Simulator.app, say) even if `down` is never run. `./dev.sh ios clean` deletes it and

@@ -102,13 +102,21 @@ EOF
         # black-hole proxy, once it opens up) and running detached, since
         # this command doesn't exit until the test suite does.
         if [ "$sub" = "test" ]; then
+          mkdir -p "$INKWELL_STORAGE_DIR"
           docker compose up -d --build
           export INKWELL_TEST_PROXY_URL
           if command -v go >/dev/null 2>&1; then
-            go run "$INKWELL_WORKTREE/tools/blackhole-proxy/main.go" \
+            # Built and run directly rather than `go run`: `go run` never
+            # forwards SIGTERM to the binary it compiled, so $! would be the
+            # wrapper and the trap below would orphan the proxy on the port.
+            proxy_bin="${TMPDIR:-/tmp}/inkwell-blackhole-proxy-$INKWELL_PROJECT_NAME"
+            if [ ! -x "$proxy_bin" ] || [ "$INKWELL_WORKTREE/tools/blackhole-proxy/main.go" -nt "$proxy_bin" ]; then
+              go build -o "$proxy_bin" "$INKWELL_WORKTREE/tools/blackhole-proxy/main.go"
+            fi
+            "$proxy_bin" \
               -listen "127.0.0.1:$INKWELL_TEST_PROXY_PORT" \
               -upstream "127.0.0.1:$INKWELL_PORT" \
-              -hold-for 20s &
+              -hold-for 15s &
             proxy_pid=$!
             trap 'kill $proxy_pid 2>/dev/null || true' EXIT INT TERM
           else

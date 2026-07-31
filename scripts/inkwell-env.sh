@@ -257,7 +257,13 @@ inkwell_create_template_sim() {
 
   if [ "$grants" != "2" ]; then
     echo "inkwell: simulator template setup failed - mic/speech-recognition grants did not land, deleting the half-configured device" >&2
-    xcrun simctl delete "$udid" >/dev/null 2>&1 || true
+    # Reachable with the device still Booted: a failed `privacy grant` short-
+    # circuits the && chain above before its `simctl shutdown`, and delete
+    # refuses a booted device.
+    xcrun simctl shutdown "$udid" >/dev/null 2>&1
+    if ! xcrun simctl delete "$udid" >/dev/null 2>&1; then
+      echo "inkwell: could not delete $udid - it may still be present" >&2
+    fi
     INKWELL_TEMPLATE_PENDING=""
     return 1
   fi

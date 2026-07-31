@@ -13,10 +13,11 @@ import XCTest
 /// thing - refusal fails in milliseconds and never exercises the timeout
 /// path at all.
 ///
-/// tools/blackhole-proxy stands in for the backend here: it accepts
-/// connections and holds them open, silent, for a fixed window - a genuine
-/// black hole - then autonomously starts forwarding to the real backend
-/// once that window elapses, with no external signal needed.
+/// tools/blackhole-proxy stands in for the backend here: a connection
+/// accepted during its fixed window is held open and silent forever - a
+/// genuine black hole, ended only by the client's own timeout, never
+/// answered late - while one opened after that window reaches the real
+/// backend, with no external signal needed.
 /// `dev.sh ios test` launches it and bakes its URL into the Test scheme
 /// (see project.yml); this test reads that and points the app at it via
 /// launchEnvironment before app.launch(), since XCUIApplication().launch()
@@ -80,8 +81,14 @@ final class OfflineSyncUITests: XCTestCase {
         // No relaunch, no retry button, nothing but time passing: the proxy
         // opens up on its own clock, and the app's own periodic sync pass
         // picks it up.
+        // 45s is the regression guard, not a round number: with the explicit
+        // 10s request timeout the first attempt dies inside the window and a
+        // later periodic pass (every 20s) lands once the proxy opens, well
+        // inside this. On URLSession's 60s default the black-holed first
+        // connection is never resolved at all, so the app would still be
+        // waiting on it here and this would - correctly - fail.
         let badgeGone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: unsyncedBadge)
-        wait(for: [badgeGone], timeout: 90)
+        wait(for: [badgeGone], timeout: 45)
         attachScreenshot(app, name: "offline-3-synced")
 
         app.buttons["showList"].tap()

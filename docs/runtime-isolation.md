@@ -38,6 +38,8 @@ time). `scripts/inkwell-env.sh` hashes that path (`shasum -a 256`) and derives:
 | Storage dir (`INKWELL_STORAGE_DIR`) | `<worktree>/backend/data`                                           | Needs no hash at all: it's already unique by living inside the worktree's own directory tree, and it's the same path `go run .` uses by default, so switching between `dev.sh` and running the binary directly doesn't move your data. |
 | Simulator name (`INKWELL_SIM_NAME`) | `Inkwell-<first 12 hex chars of the hash>`                           | Same hash as the project name, for one name to grep for per worktree. |
 | DerivedData path (`INKWELL_DERIVED_DATA`) | `<worktree>/ios/DerivedData`                                   | Same reasoning as storage dir - unique by location, not by hash. |
+| Test proxy port (`INKWELL_TEST_PROXY_PORT`) | `40000 + (hex chars 17-24 of the hash, mod 10000)`, then scanned forward by the same `inkwell_free_port` | A distinct hash slice and base range from the backend port, so the two can never land on the same candidate for one worktree. Only `tools/blackhole-proxy` binds it, for `OfflineSyncUITests`; it keeps no state, so unlike the backend port it needn't stay stable across restarts - it's launched fresh every `dev.sh ios test`. |
+| Test proxy URL (`INKWELL_TEST_PROXY_URL`) | `http://127.0.0.1:<INKWELL_TEST_PROXY_PORT>`                    | What `dev.sh ios test` bakes into the Test scheme and the test hands to the app under test, in place of the real backend URL. |
 
 **The port is the one identity a hash genuinely can't make collision-*proof*** (65536 possible
 values, an unbounded number of possible worktrees). `inkwell_free_port` closes that gap: starting
@@ -69,7 +71,9 @@ registry to update - the worktree's own path *is* the registry key.
 ## Commands
 
 ```
-./dev.sh                start the backend (foreground; Ctrl-C stops it)
+./dev.sh                regenerate the Xcode project, ensure + boot this worktree's simulator,
+                          then start the backend (foreground; Ctrl-C stops it). The iOS half is
+                          best-effort: no Xcode/xcodegen and it continues backend-only.
 ./dev.sh down            stop it, and delete this worktree's simulator + DerivedData
 ./dev.sh ps               show this worktree's backend container
 ./dev.sh logs             follow this worktree's backend logs

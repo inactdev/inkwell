@@ -1,10 +1,13 @@
 // Command blackhole-proxy is test-only infrastructure for
 // OfflineSyncUITests (see ios/InkwellUITests/OfflineSyncUITests.swift and
-// dev.sh's "ios test"): a raw TCP proxy that holds every connection open
-// and silent for a fixed window - a genuine black hole, not a refusal - so
-// a client's own request timeout is what eventually fires, then
-// autonomously starts forwarding to the real backend once that window
-// elapses. Standard library only, matching the rest of this repo.
+// dev.sh's "ios test"): a raw TCP proxy that black-holes every connection
+// accepted during a fixed window - accepted, then never read, written to,
+// or closed - so the client's own request timeout is the only thing that
+// can end it. Such a connection is never forwarded, not even once the
+// window elapses: a dropped mobile connection doesn't resume mid-request
+// when signal returns either, a fresh retry opens a new one. Connections
+// accepted after the window are proxied straight through to the real
+// backend. Standard library only, matching the rest of this repo.
 //
 // The window is measured from the *first connection accepted*, not from
 // process start: dev.sh launches this before xcodebuild test, whose own
@@ -60,15 +63,20 @@ func main() {
 }
 
 // A connection accepted before opensAt is held open and untouched - never
-// read, never written to - until that deadline passes, so the client's own
-// timeout is what ends it, not a refusal or an early close. One accepted
+// read, never written to, never closed - so the client's own timeout is what
+// ends it, not a refusal, an early close, or a late reply. One accepted
 // after opensAt is proxied immediately, byte for byte, in both directions.
 func handle(conn net.Conn, upstream string, opensAt time.Time) {
-	defer conn.Close()
-	if wait := time.Until(opensAt); wait > 0 {
-		time.Sleep(wait)
+	if time.Now().Before(opensAt) {
+		// Genuine black hole: never resolves this connection at all - the
+		// client's own timeout is what has to end it. (A real dropped
+		// connection doesn't resume mid-request either; a retry opens a
+		// fresh one.) The proxy process is short-lived (one test run), so
+		// parking the goroutine is fine.
+		select {}
 	}
 
+	defer conn.Close()
 	up, err := net.Dial("tcp", upstream)
 	if err != nil {
 		return
