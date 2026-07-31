@@ -72,34 +72,66 @@ inkwell_latest_ios_runtime() {
 # Machine-wide, so it needs a machine-wide lock: the template is created by
 # whichever worktree gets there first, and a second worktree racing it would
 # otherwise find the device mid-setup and clone it while it's still booted
-# (clone requires a shutdown device) or before the grants land. Held across
-# the whole find-or-create block, not just the create.
+# (clone requires a shutdown device) or before the grants land.
+#
+# The lock is a symlink whose target is the holder's pid: symlink creation
+# fails outright when the path exists, and the pid arrives with it, so the
+# lock is published complete and there's no instant where another lane can
+# see it empty and mistake it for abandoned. (A staging dir renamed into
+# place is not equivalent - `mv` moves it *inside* an existing lock and
+# reports success, handing every waiter the lock.)
 INKWELL_TEMPLATE_LOCK="${TMPDIR:-/tmp}/inkwell-sim-template.lock"
 
 inkwell_acquire_template_lock() {
   local waited=0 holder
-  while ! mkdir "$INKWELL_TEMPLATE_LOCK" 2>/dev/null; do
+  while ! ln -s "$$" "$INKWELL_TEMPLATE_LOCK" 2>/dev/null; do
+    if [ -e "$INKWELL_TEMPLATE_LOCK" ] && [ ! -L "$INKWELL_TEMPLATE_LOCK" ]; then
+      echo "inkwell: $INKWELL_TEMPLATE_LOCK is not this script's lock - remove it and re-run" >&2
+      return 1
+    fi
+    holder=$(readlink "$INKWELL_TEMPLATE_LOCK" 2>/dev/null) || holder=""
+    # Deliberately never reclaimed automatically: two lanes that agree a lock
+    # is abandoned both delete it and both proceed, which is the collision the
+    # lock exists to prevent. An interrupted run releases it via the trap
+    # below, so a lock outliving its holder means SIGKILL - rare enough to be
+    # worth one loud, actionable message instead of a silent double holder.
+    if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+      echo "inkwell: the simulator template lock is held by pid $holder, which is gone" >&2
+      echo "inkwell: remove $INKWELL_TEMPLATE_LOCK and re-run" >&2
+      return 1
+    fi
     if [ "$waited" -eq 0 ]; then
       echo "inkwell: waiting for another worktree to finish preparing the simulator template" >&2
     fi
-    # Only after a grace period, so this can't mistake the split second
-    # between mkdir and the pid write for an abandoned lock.
-    if [ "$waited" -ge 10 ]; then
-      holder=$(cat "$INKWELL_TEMPLATE_LOCK/pid" 2>/dev/null || true)
-      if [ -z "$holder" ] || ! kill -0 "$holder" 2>/dev/null; then
-        echo "inkwell: reclaiming stale simulator template lock ($INKWELL_TEMPLATE_LOCK)" >&2
-        rm -rf "$INKWELL_TEMPLATE_LOCK"
-        continue
-      fi
-    fi
-    if [ "$waited" -ge 900 ]; then
-      echo "inkwell: timed out waiting for the simulator template lock ($INKWELL_TEMPLATE_LOCK)" >&2
+    if [ "$waited" -ge 300 ]; then
+      echo "inkwell: timed out waiting for the simulator template lock${holder:+ (held by pid $holder)}" >&2
       return 1
     fi
     sleep 1
     waited=$((waited + 1))
   done
-  echo $$ >"$INKWELL_TEMPLATE_LOCK/pid"
+}
+
+# Only ever removes a lock this process still owns, so a run whose lock was
+# taken from it can't delete its successor's.
+inkwell_release_template_lock() {
+  local holder
+  holder=$(readlink "$INKWELL_TEMPLATE_LOCK" 2>/dev/null) || holder=""
+  [ "$holder" = "$$" ] || return 0
+  rm -f "$INKWELL_TEMPLATE_LOCK"
+}
+
+# A device that was created but not yet verified must not outlive this run:
+# it would be cached under the template name and cloned, missing grants and
+# all, by every worktree afterwards. Idempotent - the INT and EXIT traps both
+# reach it.
+inkwell_abandon_template_sim() {
+  if [ -n "${INKWELL_TEMPLATE_PENDING:-}" ]; then
+    echo "inkwell: interrupted while preparing the simulator template - deleting the unverified device" >&2
+    xcrun simctl delete "$INKWELL_TEMPLATE_PENDING" >/dev/null 2>&1 || true
+    INKWELL_TEMPLATE_PENDING=""
+  fi
+  inkwell_release_template_lock
 }
 
 # One-time, machine-wide: a simulator with the mic + speech-recognition
@@ -107,29 +139,50 @@ inkwell_acquire_template_lock() {
 # AGENTS.md - simctl privacy has no speech-recognition service). Every
 # per-worktree simulator is cloned from this one, and simctl clone carries
 # the TCC.db over, so no worktree ever repeats the manual grant step.
+#
+# Checked once before taking the lock and again while holding it, so the
+# steady state - template already there, which is every run after the first -
+# never touches the lock at all.
 inkwell_ensure_template_sim() {
   local udid rc=0
-  inkwell_acquire_template_lock || return 1
-  udid=$(inkwell_create_template_sim) || rc=$?
-  rm -rf "$INKWELL_TEMPLATE_LOCK"
-  [ "$rc" -eq 0 ] || return "$rc"
-  echo "$udid"
-}
 
-# Every step is checked and the grant is read back before this device is
-# allowed to exist under the template name: it's cached by name forever
-# afterwards, so a half-configured one would silently propagate a missing
-# grant into every worktree's clone. On any failure the device is deleted,
-# leaving the next run to start clean.
-inkwell_create_template_sim() {
-  local udid runtime tcc_db granted=""
-  udid=$(inkwell_find_sim_udid "$INKWELL_TEMPLATE_SIM_NAME")
+  udid=$(inkwell_find_sim_udid "$INKWELL_TEMPLATE_SIM_NAME") || udid=""
   if [ -n "$udid" ]; then
     echo "$udid"
     return 0
   fi
 
-  runtime=$(inkwell_latest_ios_runtime)
+  inkwell_acquire_template_lock || return 1
+  INKWELL_TEMPLATE_PENDING=""
+  INKWELL_TEMPLATE_UDID=""
+  trap 'inkwell_abandon_template_sim' EXIT
+  trap 'inkwell_abandon_template_sim; exit 130' HUP INT TERM
+
+  udid=$(inkwell_find_sim_udid "$INKWELL_TEMPLATE_SIM_NAME") || udid=""
+  if [ -z "$udid" ]; then
+    if inkwell_create_template_sim; then
+      udid="$INKWELL_TEMPLATE_UDID"
+    else
+      rc=1
+    fi
+  fi
+
+  trap - EXIT HUP INT TERM
+  inkwell_release_template_lock
+  [ "$rc" -eq 0 ] || return "$rc"
+  echo "$udid"
+}
+
+# Every step is checked and the grant is read back before this device is
+# allowed to keep the template name: it's cached by name forever afterwards,
+# so a half-configured one would silently propagate a missing grant into
+# every worktree's clone. Publishes the UDID through INKWELL_TEMPLATE_UDID
+# rather than stdout so it runs in its caller's shell, where the caller's
+# trap can see the in-progress device in INKWELL_TEMPLATE_PENDING.
+inkwell_create_template_sim() {
+  local udid runtime tcc_db granted=""
+
+  runtime=$(inkwell_latest_ios_runtime) || runtime=""
   if [ -z "$runtime" ]; then
     echo "inkwell: no available iOS simulator runtime found" >&2
     return 1
@@ -137,6 +190,7 @@ inkwell_create_template_sim() {
 
   echo "inkwell: creating simulator template (one-time; grants mic + speech recognition)" >&2
   udid=$(xcrun simctl create "$INKWELL_TEMPLATE_SIM_NAME" "$INKWELL_SIM_DEVICETYPE" "$runtime") || return 1
+  INKWELL_TEMPLATE_PENDING="$udid"
 
   tcc_db="$HOME/Library/Developer/CoreSimulator/Devices/$udid/data/Library/TCC/TCC.db"
   if xcrun simctl boot "$udid" >&2 \
@@ -146,16 +200,18 @@ inkwell_create_template_sim() {
     && sqlite3 "$tcc_db" \
       "INSERT OR IGNORE INTO access (service,client,client_type,auth_value,auth_reason,auth_version) VALUES ('kTCCServiceSpeechRecognition','$INKWELL_BUNDLE_ID',0,2,3,1);" >&2; then
     granted=$(sqlite3 "$tcc_db" \
-      "SELECT auth_value FROM access WHERE service='kTCCServiceSpeechRecognition' AND client='$INKWELL_BUNDLE_ID';" 2>/dev/null)
+      "SELECT auth_value FROM access WHERE service='kTCCServiceSpeechRecognition' AND client='$INKWELL_BUNDLE_ID';" 2>/dev/null) || granted=""
   fi
 
   if [ "$granted" != "2" ]; then
     echo "inkwell: simulator template setup failed - mic/speech-recognition grants did not land, deleting the half-configured device" >&2
     xcrun simctl delete "$udid" >/dev/null 2>&1 || true
+    INKWELL_TEMPLATE_PENDING=""
     return 1
   fi
 
-  echo "$udid"
+  INKWELL_TEMPLATE_PENDING=""
+  INKWELL_TEMPLATE_UDID="$udid"
 }
 
 # Finds (or clones from the template) this worktree's own simulator device.
@@ -163,7 +219,7 @@ inkwell_create_template_sim() {
 # same as the port and compose project name.
 inkwell_ensure_worktree_sim() {
   local udid template_udid
-  udid=$(inkwell_find_sim_udid "$INKWELL_SIM_NAME")
+  udid=$(inkwell_find_sim_udid "$INKWELL_SIM_NAME") || udid=""
   if [ -n "$udid" ]; then
     echo "$udid"
     return 0
