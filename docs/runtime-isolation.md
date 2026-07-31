@@ -71,6 +71,8 @@ registry to update - the worktree's own path *is* the registry key.
 ```
 ./dev.sh                start the backend (foreground; Ctrl-C stops it)
 ./dev.sh down            stop it, and delete this worktree's simulator + DerivedData
+./dev.sh ps               show this worktree's backend container
+./dev.sh logs             follow this worktree's backend logs
 ./dev.sh info             print this worktree's derived port/storage/simulator/etc
 ./dev.sh ios generate    regenerate the Xcode project with this worktree's backend URL baked in
 ./dev.sh ios sim          ensure + boot this worktree's simulator, print its UDID

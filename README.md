@@ -51,6 +51,15 @@ when prompted - tapping the well starts a dictation segment, so capture needs bo
 either leaves nothing to capture with. Tapping the words hands over the keyboard, so they can be
 typed or corrected by hand from there.
 
+Running from Xcode's GUI is the one route **not** covered by per-worktree isolation. The backend URL
+and build output still follow this worktree (the URL is baked into the build above, and Xcode's own
+DerivedData is already per-project-path), but the simulator is whatever device happens to be
+selected in Xcode's toolbar - not a worktree-specific one. Two worktrees both driven from the GUI
+can land on the same device and overwrite each other's app install and TCC grants.
+`./dev.sh ios sim|build|test` pin this worktree's own cloned device instead; use those when more
+than one worktree is running at once, or first pick the device `./dev.sh ios sim` prints in Xcode's
+device picker.
+
 Test suites: `InkwellTests` (the audio spike proof, plus the capture state-machine regressions -
 duplicate inklings, a failed save, interrupted segments) and `InkwellUITests` (the capture flow,
 the offline-then-sync scenario, and a long dictation staying scrollable on screen, driven through
