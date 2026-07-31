@@ -9,7 +9,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   storage, DerivedData path, and cloned simulator so parallel worktrees can't collide at runtime.
   See `docs/runtime-isolation.md`.
 - `ios/Inkwell.xcodeproj` is generated, not committed. Run `./dev.sh ios generate` after pulling or
-  after adding/removing source files, before opening in Xcode or running `xcodebuild`.
+  after adding/removing source files, before opening it in Xcode - `./dev.sh ios build|test`
+  regenerate it themselves first.
 - Simulator + XCUITest sharp edges hit while building this (all in this repo's headless dev environment, no human at the simulator):
   - `xcrun simctl privacy grant` has no `speech-recognition` service on Xcode 16.4 - grant it by editing `TCC.db` directly (`~/Library/Developer/CoreSimulator/Devices/<UDID>/data/Library/TCC/TCC.db`, table `access`, `service='kTCCServiceSpeechRecognition'`, set `auth_value=2`). `microphone` works normally via `simctl privacy grant`. `./dev.sh ios sim` does both once, on a shared template device, and every worktree's simulator inherits them via `simctl clone` - no need to repeat this by hand per worktree.
   - `xcrun simctl uninstall` resets TCC grants for that bundle id even though the identity is nominally per-bundle-id, not per-install - re-grant after every uninstall/reinstall.

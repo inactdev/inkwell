@@ -20,6 +20,9 @@ automatically - so two lanes never collide at runtime the way they would fightin
 port and data. `./dev.sh` is the only documented way to run any of it; see
 `docs/runtime-isolation.md` for how and why.
 
+Requires Docker with the `docker compose` v2 plugin - the backend and its storage run in a
+container per worktree.
+
 ```
 ./dev.sh
 ```
