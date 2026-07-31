@@ -39,7 +39,7 @@ cd "$INKWELL_WORKTREE"
 inkwell_wait_for_backend() {
   local compose_pid=$1 tries=0
   while [ "$tries" -lt 600 ]; do
-    curl -fsS -o /dev/null "$INKWELL_BACKEND_URL/inklings" 2>/dev/null && return 0
+    curl -fsS --connect-timeout 2 --max-time 5 -o /dev/null "$INKWELL_BACKEND_URL/inklings" 2>/dev/null && return 0
     if ! kill -0 "$compose_pid" 2>/dev/null; then
       echo "inkwell: the backend exited before it became reachable" >&2
       return 1
@@ -128,6 +128,17 @@ case "$cmd" in
     # started: a signal makes the `wait` below return immediately, so without
     # waiting here the prompt comes back while containers are still stopping
     # and the next ./dev.sh races the leftovers over the same project.
+    #
+    # A real terminal Ctrl-C sends SIGINT to the whole foreground process
+    # group, so compose gets SIGINT directly *and* this trap sends it a
+    # second, different signal (SIGTERM) moments later - two signals where
+    # the old `exec` form delivered exactly one. Verified this doesn't
+    # escalate compose's "press Ctrl+C again to force" behavior: that
+    # escalation is keyed to a second SIGINT specifically, not any second
+    # signal - confirmed with docker compose v5.0.1 by comparing a
+    # single-SIGINT stop against a SIGINT-immediately-followed-by-SIGTERM
+    # stop against a container with a 6s SIGTERM trap; both ran the full
+    # grace period and exited identically. Safe as written.
     docker compose up --build "$@" &
     compose_pid=$!
     trap 'trap - INT TERM; kill "$compose_pid" 2>/dev/null || true; wait "$compose_pid" 2>/dev/null || true; exit 130' INT TERM

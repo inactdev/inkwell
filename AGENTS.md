@@ -18,7 +18,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   - The app's container path from `xcrun simctl get_app_container <device> <bundle-id> data` changes on every fresh install (new UUID) - re-fetch it fresh each time rather than caching it across test runs, when polling on-disk state from outside the test.
   - `xcodebuild test`'s own setup time (build + install + launch, before "Test Case started") is highly variable in this environment - tens of seconds is normal, over a minute is not unusual. Don't assume a fixed short setup window when orchestrating anything time-sensitive around a test run.
   - `AVAudioEngine` real-time playback silently never renders in this headless environment (no real audio output device - CoreAudio HAL reports `!obj`). Use `enableManualRenderingMode(.offline, ...)` + `renderOffline` to drive the engine deterministically for tests instead.
-  - To test `./dev.sh`'s Ctrl-C handling non-interactively, don't background it with a trailing `&` in your own shell - bash sets SIGINT to ignored for asynchronous jobs and no trap inside the child can override that, so it'll look like Ctrl-C does nothing. Launch it as a true foreground command (e.g. this harness's own background-task tracking) and signal that real PID instead.
+- Shell job-control sharp edge, not simulator-specific: to test `./dev.sh`'s Ctrl-C handling non-interactively, don't background it with a trailing `&` in your own shell - bash sets SIGINT to ignored for asynchronous jobs and no trap inside the child can override that, so it'll look like Ctrl-C does nothing. Launch it as a true foreground command (e.g. this harness's own background-task tracking) and signal that real PID instead.
 
 ## Maintaining this file
 
