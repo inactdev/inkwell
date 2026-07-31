@@ -21,8 +21,18 @@ final class CaptureViewModel {
     /// Set synchronously so a second tap can't start a second capture while
     /// the first is still awaiting authorization.
     private var isStartingListening = false
+    /// True only while a dictation segment is actively contributing live
+    /// words. `engine.transcript` can be written asynchronously even after
+    /// `stopCapturing()` - the recognizer's settled final result still
+    /// arrives on its own queue - so it is never safe to read as "live" on
+    /// its own. Without this scope, a segment's words stay readable as live
+    /// after they were already folded into `committedText`: the idle screen
+    /// after Done keeps showing a stray Done button that saves a duplicate
+    /// inkling, and a save-failure retry re-appends the same words on top
+    /// of themselves.
+    private var isSegmentLive = false
 
-    var liveTranscript: String { engine.transcript }
+    var liveTranscript: String { isSegmentLive ? engine.transcript : "" }
     var inputLevel: Float { engine.inputLevel }
     var isListening: Bool { mode == .listening }
 
@@ -89,6 +99,7 @@ final class CaptureViewModel {
                 // multi-segment capture becomes common.
                 try engine.startCapturing(to: store.audioURL(for: draftID))
                 mode = .listening
+                isSegmentLive = true
             } catch {
                 authorizationDenied = true
             }
@@ -96,8 +107,11 @@ final class CaptureViewModel {
     }
 
     private func commitLiveTranscript() {
-        guard !liveTranscript.isEmpty else { return }
-        committedText = displayedText
+        guard isSegmentLive else { return }
+        if !liveTranscript.isEmpty {
+            committedText = displayedText
+        }
+        isSegmentLive = false
     }
 
     /// Saves instantly to disk, no network involved, then resets for the next capture.
@@ -159,5 +173,6 @@ final class CaptureViewModel {
         mode = .idle
         committedText = ""
         draftID = UUID()
+        isSegmentLive = false
     }
 }

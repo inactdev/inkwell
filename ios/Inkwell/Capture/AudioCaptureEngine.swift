@@ -19,7 +19,10 @@ final class AudioCaptureEngine: @unchecked Sendable {
         case audioFileCreationFailed
     }
 
-    private(set) var transcript: String = ""
+    /// Internal (not private) set so CaptureViewModelTests can inject a
+    /// delayed post-stop delivery without real speech, reproducing the
+    /// exact race that scoping in CaptureViewModel guards against.
+    var transcript: String = ""
     private(set) var isRecording = false
     /// 0...1, driven by the same tap, for the inkwell's reaction to real audio.
     private(set) var inputLevel: Float = 0
