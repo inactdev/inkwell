@@ -27,11 +27,17 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         ITSAppUsesNonExemptEncryption: false
+        # Baked in at build time rather than passed as a scheme environment
+        # variable: XCUIApplication().launch() does not reliably inherit the
+        # scheme's env vars, so a UI test's app-under-test would otherwise
+        # silently fall back to the hardcoded default. See AppConfig.swift.
+        INKWELL_BACKEND_URL: $(INKWELL_BACKEND_URL)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.inkwell.app
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_EMIT_LOC_STRINGS: YES
+        INKWELL_BACKEND_URL: ${INKWELL_BACKEND_URL}
 
   InkwellTests:
     type: bundle.unit-test
@@ -66,8 +72,14 @@ schemes:
         InkwellTests: [test]
         InkwellUITests: [test]
     test:
+      config: Debug
       targets:
         - InkwellTests
         - InkwellUITests
+      # Read by OfflineSyncUITests via ProcessInfo, not by the app-under-test -
+      # safe as a scheme env var for exactly that reason (see AppConfig.swift's
+      # comment on why INKWELL_BACKEND_URL itself is NOT done this way).
+      environmentVariables:
+        INKWELL_TEST_PROXY_URL: ${INKWELL_TEST_PROXY_URL}
     run:
       config: Debug

@@ -1,0 +1,26 @@
+# Backend/storage isolation layer. Never invoked directly - `./dev.sh` sets
+# COMPOSE_PROJECT_NAME, INKWELL_PORT, and INKWELL_STORAGE_DIR from a hash of
+# the current git worktree before calling this, so every worktree gets its
+# own project name, published port, and storage bind mount automatically.
+# See docs/runtime-isolation.md.
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "127.0.0.1:${INKWELL_PORT}:8080"
+    volumes:
+      - ${INKWELL_STORAGE_DIR}:/data
+    environment:
+      INKWELL_ADDR: 0.0.0.0:8080
+      INKWELL_STORAGE_DIR: /data
+    labels:
+      # Read back by dev.sh's port scan to tell "this worktree's own
+      # container, already on its port" apart from a genuine collision.
+      com.inkwell.worktree: ${INKWELL_WORKTREE}
+      com.inkwell.port: "${INKWELL_PORT}"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/inklings"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s

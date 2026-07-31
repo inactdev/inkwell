@@ -106,7 +106,10 @@ The phone's sync loop (see `ios/Inkwell/Sync/SyncCoordinator.swift`):
   just fails quietly and the timer picks it up later).
 - Also triggers on a network path change from unreachable to reachable (via `NWPathMonitor`), so
   a phone that regains signal doesn't have to wait for the next timer tick.
-- For each unsynced inkling (`syncedAt == nil`), `POST`s it. On success, stores the returned
+- For each unsynced inkling (`syncedAt == nil`), one at a time, `POST`s it with an explicit
+  10-second request timeout rather than `URLSession`'s 60-second default: a refused connection
+  fails in milliseconds, but a backend that accepts the connection and then goes silent would
+  otherwise stall every other pending inkling for a full minute. On success, stores the returned
   `syncedAt` and re-saves the on-device record - this clears its "not yet synced" indicator. On
   failure, leaves it exactly as it was; the next sync pass tries again. No backoff, no retry
   limit, no error surfaced to the owner - "quiet count, never an alarm" per the product contract.

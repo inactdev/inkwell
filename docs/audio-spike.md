@@ -63,11 +63,11 @@ tests cover what a human tap-and-speak session would have proven, from different
 Run both:
 
 ```
-xcodebuild -project ios/Inkwell.xcodeproj -scheme Inkwell \
-  -destination 'platform=iOS Simulator,name=iPhone 16' \
-  -derivedDataPath ios/.build/DerivedData \
-  test -only-testing:InkwellTests/AudioSpikeTests
+./dev.sh ios test -only-testing:InkwellTests/AudioSpikeTests
 ```
+
+That runs against a simulator cloned for this worktree with both grants above already applied, so
+the TCC step is no longer a manual one - see `docs/runtime-isolation.md`.
 
 Both pass in about 4 seconds total, no flakes across repeated runs.
 

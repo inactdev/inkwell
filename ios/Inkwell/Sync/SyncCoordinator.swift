@@ -65,6 +65,13 @@ final class SyncCoordinator {
     private func syncOne(_ inkling: Inkling) async {
         var request = URLRequest(url: baseURL.appendingPathComponent("inklings"))
         request.httpMethod = "POST"
+        // A refused connection fails in milliseconds; a genuinely hung one
+        // (a dropped subway connection, say) would otherwise sit on
+        // URLSession's 60s default - and since syncAll() below processes
+        // inklings one at a time behind isSyncing, a single hang stalls
+        // every other pending sync for that whole window. An explicit,
+        // short timeout keeps a real hang from starving the rest.
+        request.timeoutInterval = 10
 
         var form = MultipartFormData()
         let iso = ISO8601DateFormatter()

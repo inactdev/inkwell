@@ -12,3 +12,6 @@ xcuserdata/
 # Go backend build artifacts
 backend/backend
 backend/inkwell-backend
+
+# Per-worktree backend storage (its own git repo; see dev.sh / docs/runtime-isolation.md)
+backend/data/
