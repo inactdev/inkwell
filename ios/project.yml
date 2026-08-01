@@ -38,6 +38,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_EMIT_LOC_STRINGS: YES
         INKWELL_BACKEND_URL: ${INKWELL_BACKEND_URL}
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
   InkwellTests:
     type: bundle.unit-test
