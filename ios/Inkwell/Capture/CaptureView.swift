@@ -53,7 +53,7 @@ struct CaptureView: View {
 
                                     InkwellView(isRecording: viewModel.isListening, inputLevel: viewModel.inputLevel)
                                         .scaleEffect(inkwellScale)
-                                        .frame(width: 260 * inkwellScale, height: 260 * inkwellScale)
+                                        .frame(width: InkwellView.containerSize * inkwellScale, height: InkwellView.containerSize * inkwellScale)
                                         .animation(.easeInOut(duration: 0.25), value: inkwellScale)
                                         .onTapGesture { viewModel.tapInkwell() }
                                         .accessibilityLabel(viewModel.isListening ? "Stop and edit" : "Start capturing")
