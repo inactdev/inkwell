@@ -37,7 +37,8 @@ further steps. `./dev.sh info` prints exactly what got derived. Ctrl-C stops the
 this worktree's simulator booted with the app still on it; `./dev.sh down` stops the backend *and*
 deletes that simulator and its DerivedData, which is what reclaims the 1-3GB a clone costs.
 `./dev.sh up -d` does every one of those steps too, up to and including Inkwell on screen, but
-leaves the backend running in the background and gives the terminal back instead of holding it.
+leaves the backend running in the background and gives the terminal back instead of holding it -
+and, being the form scripts drive, it exits non-zero if the backend never came up.
 The iOS half is best-effort: without Xcode/xcodegen it says so and brings up the backend alone.
 `go run .` from `backend/` (see `backend/README.md`) still works for quick backend-only iteration,
 just without the isolation - fine for a single lane, not for running two at once.

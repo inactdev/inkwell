@@ -61,6 +61,15 @@ inkwell_wait_for_backend() {
   return 1
 }
 
+# Tears the backgrounded compose down and waits for it to finish doing so.
+# Shared by the INT and TERM traps, which differ only in the exit status they
+# report, never in what they stop.
+inkwell_stop_compose() {
+  trap - INT TERM
+  kill "$1" 2>/dev/null || true
+  wait "$1" 2>/dev/null || true
+}
+
 # The two liveness checks a caller can pass. Which one is right depends on
 # how compose was started: the foreground form has a compose process of its
 # own to watch, while the detached form's compose has already exited on
@@ -94,14 +103,18 @@ inkwell_args_request_detach() {
   return 1
 }
 
+# Non-zero means specifically "the backend never answered, so nothing was
+# built, installed, or launched" - the one outcome a caller can't recover from.
+# A backend that *is* up but whose app build/install/launch failed stays a
+# success here, matching the documented best-effort contract for the iOS half.
 inkwell_launch_when_backend_ready() {
   local udid=$1
   shift
-  if inkwell_wait_for_backend "$@"; then
-    inkwell_build_install_launch "$udid" || true
-  else
+  if ! inkwell_wait_for_backend "$@"; then
     echo "inkwell: backend not reachable - skipping app build, install, and launch" >&2
+    return 1
   fi
+  inkwell_build_install_launch "$udid" || true
 }
 
 # Simulator.app shows every booted device in its own window inside one
@@ -278,10 +291,15 @@ case "$cmd" in
       # still gets built, installed, and launched - `up -d` differs in who
       # holds the backend open, not in what the command is for.
       docker compose up --build "$@"
+      # Detached mode has no `wait` to inherit a status from, so this is the
+      # only place the "containers came up but the backend never answered"
+      # outcome can reach a caller - without it, the scriptable form of the
+      # command reports success for a run that never produced a usable backend.
+      rc=0
       if [ "$ios_ready" -eq 1 ]; then
-        inkwell_launch_when_backend_ready "$udid" inkwell_compose_containers_alive
+        inkwell_launch_when_backend_ready "$udid" inkwell_compose_containers_alive || rc=$?
       fi
-      exit 0
+      exit "$rc"
     fi
 
     # Backgrounded rather than exec'd, so there's a point after the backend
@@ -310,10 +328,18 @@ case "$cmd" in
     # it short. Safe as written - but a third signal here would not be.
     docker compose up --build "$@" &
     compose_pid=$!
-    trap 'trap - INT TERM; kill "$compose_pid" 2>/dev/null || true; wait "$compose_pid" 2>/dev/null || true; exit 130' INT TERM
+    # Two traps rather than one armed for both signals, so the status reported
+    # says which signal actually arrived under the usual 128+signum convention:
+    # Ctrl-C is 130, a supervisor's `kill` is 143. The teardown is identical.
+    trap 'inkwell_stop_compose "$compose_pid"; exit 130' INT
+    trap 'inkwell_stop_compose "$compose_pid"; exit 143' TERM
 
+    # Unlike the detached branch, an unreachable backend must not end the script
+    # here: compose is still running as a background child, and exiting now
+    # would orphan it and drop the "Ctrl-C stops the backend" contract. The
+    # `wait` below owns this path's exit status and reports compose's own.
     if [ "$ios_ready" -eq 1 ]; then
-      inkwell_launch_when_backend_ready "$udid" inkwell_compose_pid_alive "$compose_pid"
+      inkwell_launch_when_backend_ready "$udid" inkwell_compose_pid_alive "$compose_pid" || true
     fi
 
     wait "$compose_pid"
