@@ -181,6 +181,52 @@ final class CaptureViewModelTests: XCTestCase {
         XCTAssertEqual(store.inklings.count, 0, "nothing was said, so nothing should be saved")
     }
 
+    /// The bug this task exists to fix: a recognizer that produces nothing
+    /// (settles with an error, or the engine's silence timeout gives up)
+    /// used to leave the screen claiming "Listening…" forever, with nothing
+    /// to act on. It must now surface as a visible failure, and it must not
+    /// destroy the draft - the audio already on disk for it is the only
+    /// record of what was said if no words were ever recognized.
+    func testRecognitionFailureWithNoWordsHeardSurfacesAndKeepsTheDraftEditable() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+
+        engine.failRecognition()
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+
+        XCTAssertTrue(viewModel.recognitionFailed, "a recognizer that produced nothing must not fail silently")
+        XCTAssertEqual(viewModel.mode, .editing, "the draft must stay open to type into, not reset to idle")
+        XCTAssertEqual(store.inklings.count, 0, "nothing was heard, so nothing should have been saved yet")
+
+        // The proven-working typed path recovers the idea.
+        viewModel.updateCommittedText("Check the mooring line after the storm")
+        viewModel.done()
+        XCTAssertEqual(store.inklings.count, 1)
+    }
+
+    /// Some words came through before the recognizer died mid-segment - those
+    /// words must survive exactly like an interruption's do.
+    func testRecognitionFailureAfterPartialWordsKeepsThoseWords() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+        engine.transcript = "Swap the buoy battery"
+
+        engine.failRecognition()
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+
+        XCTAssertTrue(viewModel.recognitionFailed)
+        XCTAssertEqual(viewModel.committedText, "Swap the buoy battery", "words heard before the failure must survive it")
+        XCTAssertEqual(viewModel.mode, .editing)
+    }
+
     private func makeStore() throws -> InklingStore {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CaptureViewModelTests-\(UUID().uuidString)", isDirectory: true)
@@ -219,6 +265,7 @@ private final class FakeCaptureEngine: CaptureEngine, @unchecked Sendable {
     var inputLevel: Float = 0
     private(set) var isCapturing = false
     private var onInterruption: (@Sendable () -> Void)?
+    private var onRecognitionFailure: (@Sendable () -> Void)?
 
     func requestAuthorization() async -> Bool { true }
 
@@ -235,6 +282,10 @@ private final class FakeCaptureEngine: CaptureEngine, @unchecked Sendable {
         onInterruption = handler
     }
 
+    func setRecognitionFailureHandler(_ handler: @escaping @Sendable () -> Void) {
+        onRecognitionFailure = handler
+    }
+
     /// What the real engine's interruption observer does: stop for real,
     /// then tell the owner the segment is over.
     func interrupt() {
@@ -246,5 +297,12 @@ private final class FakeCaptureEngine: CaptureEngine, @unchecked Sendable {
     /// first - nothing in the protocol promises it has.
     func interruptWithoutStopping() {
         onInterruption?()
+    }
+
+    /// What the real engine does on a recognizer error or a silence timeout:
+    /// stop for real, then tell the owner nothing came through.
+    func failRecognition() {
+        stopCapturing()
+        onRecognitionFailure?()
     }
 }

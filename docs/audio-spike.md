@@ -60,7 +60,17 @@ tests cover what a human tap-and-speak session would have proven, from different
    speaker in this environment; that requires a human running the app and is exactly what
    the manual capture screen is for.
 
-Run both:
+3. **`testRealInputNodeSilenceIsReportedRatherThanHangingForever`** (issue #12's regression
+   test). Follow-up to #2: this environment's real `inputNode` doesn't just go untested by
+   this suite, it reliably produces *no signal at all* - confirmed via
+   `ios/InkwellUITests/VoiceCaptureFailureUITests.swift` driving the actual capture screen
+   and observing 10s of "Listening…" with a byte-identical screenshot at every check. That
+   used to be silent in the product sense too: nothing told `CaptureViewModel` or the owner
+   that the recognizer would never produce a word. This test asserts
+   `AudioCaptureEngine.setRecognitionFailureHandler` fires within `silenceTimeout` against the
+   real input node - the fix, not just the mechanism.
+
+Run all three:
 
 ```
 ./dev.sh ios test -only-testing:InkwellTests/AudioSpikeTests
@@ -69,13 +79,15 @@ Run both:
 That runs against a simulator cloned for this worktree with both grants above already applied, so
 the TCC step is no longer a manual one - see `docs/runtime-isolation.md`.
 
-Both pass in about 4 seconds total, no flakes across repeated runs.
+All three pass in well under `AudioCaptureEngine.silenceTimeout` plus a few seconds, no flakes
+across repeated runs.
 
 ## What this does and doesn't prove
 
 Proven: the API-level mechanism (one tap, two consumers, no format conflicts, no engine
 crashes) works exactly as the production capture screen uses it, verified with real speech
-content, not silence.
+content, not silence. Also proven: this environment's real `inputNode` is silence, not an
+untested unknown, and the app now surfaces that rather than hanging - see AGENTS.md.
 
 Not proven here (needs a human with the simulator focused and a working mic, i.e. actual
 manual QA): that live human speech through the Simulator's mic passthrough produces good

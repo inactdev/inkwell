@@ -14,6 +14,12 @@ protocol CaptureEngine: AnyObject, Sendable {
     func stopCapturing()
     /// Called when the system takes the audio session away mid-segment.
     func setInterruptionHandler(_ handler: @escaping @Sendable () -> Void)
+    /// Called when a segment can no longer produce a transcript: the
+    /// recognizer settled with an error, or produced nothing at all within
+    /// `AudioCaptureEngine.silenceTimeout` of starting. Without this, a dead
+    /// recognizer and a quietly-working one are indistinguishable from the
+    /// UI: both just show "Listening…" forever.
+    func setRecognitionFailureHandler(_ handler: @escaping @Sendable () -> Void)
 }
 
 /// Feeds one microphone tap to two independent consumers at once:
@@ -34,6 +40,13 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
         case audioFileCreationFailed
     }
 
+    /// How long a segment can run without producing a single word before
+    /// it's treated as dead rather than quietly working - e.g. no audio is
+    /// actually reaching the recognizer. Long enough that a normal pause
+    /// before speaking doesn't trip it; short enough that the owner isn't
+    /// left staring at "Listening…" indefinitely.
+    static let silenceTimeout: TimeInterval = 6
+
     private(set) var transcript: String = ""
     private(set) var isRecording = false
     /// 0...1, driven by the same tap, for the inkwell's reaction to real audio.
@@ -46,6 +59,7 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
     @ObservationIgnored private var audioFile: AVAudioFile?
     @ObservationIgnored private var onFinalTranscript: ((String) -> Void)?
     @ObservationIgnored private var onInterruption: (@Sendable () -> Void)?
+    @ObservationIgnored private var onRecognitionFailure: (@Sendable () -> Void)?
     @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
     /// Bumped per capture segment so a callback from a segment that has
     /// already been stopped can't publish over the current one's state.
@@ -146,6 +160,7 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
             try audioEngine.start()
         }
         isRecording = true
+        watchForSilence(generation: generation)
 
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self else { return }
@@ -159,7 +174,28 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
                 if settled {
                     self.onFinalTranscript?(self.transcript)
                 }
+                // Only a genuine mid-segment failure, not the settle that
+                // follows a deliberate stopCapturing() - stopCapturing()
+                // already flips isRecording off before cancelling the task,
+                // so a cancellation's own completion can't be mistaken for one.
+                if error != nil, self.isRecording {
+                    self.onRecognitionFailure?()
+                }
             }
+        }
+    }
+
+    /// The recognizer can go completely silent - no partial result, no
+    /// error, ever - if no usable audio is reaching it at all (seen in this
+    /// project's headless Simulator, where the mic tap gets no signal; also
+    /// possible on-device if the input format or session is wrong in some
+    /// way that doesn't throw). Without this, that looks identical to a
+    /// recognizer that's still quietly working: "Listening…" forever.
+    private func watchForSilence(generation: Int) {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.silenceTimeout))
+            guard let self, self.isRecording, self.generation == generation, self.transcript.isEmpty else { return }
+            self.onRecognitionFailure?()
         }
     }
 
@@ -170,6 +206,10 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
 
     func setInterruptionHandler(_ handler: @escaping @Sendable () -> Void) {
         onInterruption = handler
+    }
+
+    func setRecognitionFailureHandler(_ handler: @escaping @Sendable () -> Void) {
+        onRecognitionFailure = handler
     }
 
     func stopCapturing() {

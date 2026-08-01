@@ -15,6 +15,7 @@ final class CaptureViewModel {
     var showConfirmation = false
     var authorizationDenied = false
     var saveFailed = false
+    var recognitionFailed = false
 
     private let engine: any CaptureEngine
     private let store: InklingStore
@@ -53,6 +54,9 @@ final class CaptureViewModel {
         engine.setInterruptionHandler { [weak self] in
             Task { @MainActor in self?.captureWasInterrupted() }
         }
+        engine.setRecognitionFailureHandler { [weak self] in
+            Task { @MainActor in self?.captureRecognitionFailed() }
+        }
     }
 
     /// The system took the audio session mid-segment (a call, Siri, an
@@ -72,6 +76,21 @@ final class CaptureViewModel {
         if !hasContent {
             discardDraft()
         }
+    }
+
+    /// The recognizer settled with an error, or never produced a word at
+    /// all - see `AudioCaptureEngine.silenceTimeout`. Unlike an interruption,
+    /// nothing about this is self-evident to the owner, so it must say so
+    /// rather than just quietly dropping back to idle. Always lands in
+    /// editing, even with nothing heard: `engine.stopCapturing()` already ran,
+    /// but the draft (and any audio already written to disk for it) stays
+    /// alive until the owner decides what to do with it - typing over a
+    /// failed recognition is the one path already proven to work, and a
+    /// silent reset here would just be this same bug moved later.
+    private func captureRecognitionFailed() {
+        guard mode == .listening else { return }
+        beginEditing()
+        recognitionFailed = true
     }
 
     /// Tapping the well: start listening from idle/editing, or - while

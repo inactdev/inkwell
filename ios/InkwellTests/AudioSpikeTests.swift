@@ -146,6 +146,40 @@ final class AudioSpikeTests: XCTestCase {
         capture.stopCapturing()
     }
 
+    /// Issue #12 / the captain's report on 2026-07-31: tapping the well against
+    /// the real hardware `inputNode` in this headless Simulator produces no
+    /// transcript and no error, ever - proven by
+    /// `VoiceCaptureFailureUITests` (10s of "Listening…" with a byte-identical
+    /// screenshot at every check). That's this environment's actual instance
+    /// of "no usable audio ever reaches the recognizer"; a real device could
+    /// hit the same silent dead end for other reasons (session
+    /// misconfiguration that doesn't throw, a stalled recognizer). Either
+    /// way, this is the regression test for the fix: the real production
+    /// entry point, against the real input node, must not be able to sit
+    /// there silently past `AudioCaptureEngine.silenceTimeout`.
+    func testRealInputNodeSilenceIsReportedRatherThanHangingForever() throws {
+        let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+        try XCTSkipUnless(recognizer?.isAvailable == true, "Speech recognizer not available in this environment")
+
+        let granted = try awaitAuthorization()
+        try XCTSkipUnless(granted, "Microphone/speech authorization not granted in this environment")
+
+        let capture = AudioCaptureEngine()
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("inkwell-spike-silence-\(UUID().uuidString)")
+            .appendingPathExtension("caf")
+        addTeardownBlock { try? FileManager.default.removeItem(at: outputURL) }
+
+        let failureExpectation = expectation(description: "silence was reported as a failure")
+        capture.setRecognitionFailureHandler { failureExpectation.fulfill() }
+
+        try capture.startCapturing(to: outputURL)
+        wait(for: [failureExpectation], timeout: AudioCaptureEngine.silenceTimeout + 5)
+        XCTAssertTrue(capture.transcript.isEmpty, "this environment has no live mic input to produce real words from")
+
+        capture.stopCapturing()
+    }
+
     private func awaitAuthorization() throws -> Bool {
         let exp = expectation(description: "authorization")
         var granted = false
