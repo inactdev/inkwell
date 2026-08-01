@@ -138,31 +138,39 @@ inkwell_launch_when_backend_ready() {
 # Accessibility permission System Events window-scripting requires - only the
 # same Apple-Events authorization `activate` already relies on.
 #
-# NOT VISUALLY VERIFIED. Built and tested in a sandboxed session with no real
-# interactive display (screencapture there returns only the lock-screen
-# wallpaper, never actual app windows), so there was no way to confirm the
-# right window actually ends up frontmost. What *is* confirmed from that
-# session: querying Simulator's window list over AppleScript is itself
-# unreliable there - sometimes an immediate error, sometimes no response
-# for minutes - which is why this is wrapped in a hard watchdog rather than
-# left to run free. A wrong-frontmost-window miss is a far smaller problem
-# than turning "one command, terminal comes back" into "one command that
-# might never return," so the watchdog is not optional. It is also
-# self-contained: its `sleep` fires the kill only when it actually wins the
-# race, and the watchdog's own output goes nowhere, so nothing it spawns can
-# outlive this function still holding the stdout dev.sh inherited - `out=$(
-# ./dev.sh up -d )` returns when dev.sh does, not five seconds later.
+# CONFIRMED NON-FUNCTIONAL on Xcode 16.4 - not merely unverified. Simulator's
+# dictionary advertises the Cocoa Standard Suite's `window` class (that is what
+# made this look like the right mechanism), but Simulator.app does not actually
+# implement the element: `every window` fails with -1728 (errAENoSuchObject) on
+# every attempt, and `count of windows` answers `missing value`. The repeat
+# below therefore always errors out before it can set any window's index, so on
+# this Xcode version this worktree's window is *not* brought forward when
+# another lane already had Simulator.app open. Reproduced on four separate
+# ./dev.sh runs in the real two-lane case and standalone on repeat. Not a
+# permissions or headless-session artifact, which was the obvious suspect and
+# was ruled out two ways: the `activate` below exits 0 in the same script (so
+# Apple Events are authorized), and the identical query against Finder - an app
+# that does implement the element - returns a real count in the same session.
+# The app itself still launches and is visible in its own Simulator window
+# regardless (confirmed on real hardware); it just may sit behind another
+# lane's window.
 #
-# Which of the outcomes happened is reported on stderr rather than swallowed,
-# because that is the only signal whoever verifies this on a real screen has:
-# "the window query stalled" and "the raise ran and picked the wrong window"
-# call for completely different follow-ups. Note that osascript exiting 0
-# means the raise was *issued*, not that the right window came forward - the
-# script reports which window it matched, and nothing here can see the screen.
-# The mechanism (Simulator's own scripting dictionary, index-based window
-# raise) is the standard approach for this and should work on a real screen -
-# someone with actual GUI access needs to confirm it before trusting this
-# comment further.
+# Kept rather than deleted, because it is harmless (one bounded call), it is
+# the piece that would start working if a later Xcode implements the element,
+# and the stderr report below is what would say so - this comment cannot go
+# stale silently. Note that osascript exiting 0 would mean the raise was
+# *issued*, not that the right window came forward; nothing here can see the
+# screen.
+#
+# The watchdog is not optional, and stays whatever the element does: querying
+# Simulator's window list over AppleScript has also been seen to hang rather
+# than answer, and a wrong-frontmost-window miss is a far smaller problem than
+# turning "one command, terminal comes back" into "one command that might never
+# return." It is self-contained: its `sleep` fires the kill only when it
+# actually wins the race, and the watchdog's own output goes nowhere, so
+# nothing it spawns can outlive this function still holding the stdout dev.sh
+# inherited - `out=$( ./dev.sh up -d )` returns when dev.sh does, not five
+# seconds later.
 inkwell_focus_sim_window() {
   local sim_name=$1 osa_pid watchdog_pid osa_status=0 osa_out result
   osa_out="${TMPDIR:-/tmp}/inkwell-focus-$INKWELL_PROJECT_NAME.out"
@@ -253,9 +261,9 @@ inkwell_build_install_launch() {
   # inkwell_focus_sim_window above. A cold launch has already been aimed by
   # -CurrentDeviceUDID, and Simulator.app answers Apple events before it has
   # necessarily built a window for each booted device - so asking there would
-  # spend the watchdog's patience on a question whose answer doesn't matter and
-  # could report "no window" on the ordinary single-lane run, which is exactly
-  # the signal that has to stay trustworthy for the real-screen check.
+  # spend the watchdog's patience on a question whose answer doesn't matter, and
+  # would put the raise's diagnostic on stderr for the ordinary single-lane run,
+  # where nothing was ever wrong with which window is in front.
   if [ "$sim_was_running" -eq 1 ]; then
     inkwell_focus_sim_window "$INKWELL_SIM_NAME"
   fi

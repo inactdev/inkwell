@@ -40,6 +40,9 @@ deletes that simulator and its DerivedData, which is what reclaims the 1-3GB a c
 leaves the backend running in the background and gives the terminal back instead of holding it -
 and, being the form scripts drive, it exits non-zero if the backend never came up.
 The iOS half is best-effort: without Xcode/xcodegen it says so and brings up the backend alone.
+With two lanes running at once, Simulator.app is shared and, on Xcode 16.4, dev.sh cannot pick which
+lane's window ends up in front - this worktree's window is there with the app running in it, just
+maybe behind the other one (see `docs/runtime-isolation.md`).
 `go run .` from `backend/` (see `backend/README.md`) still works for quick backend-only iteration,
 just without the isolation - fine for a single lane, not for running two at once.
 
