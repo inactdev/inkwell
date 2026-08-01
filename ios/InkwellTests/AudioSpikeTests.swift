@@ -171,6 +171,9 @@ final class AudioSpikeTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: outputURL) }
 
         let failureExpectation = expectation(description: "silence was reported as a failure")
+        // The watchdog and a late recognizer error can both legitimately
+        // report the same dead segment - either one proves the fix.
+        failureExpectation.assertForOverFulfill = false
         capture.setRecognitionFailureHandler { failureExpectation.fulfill() }
 
         try capture.startCapturing(to: outputURL)
@@ -178,6 +181,95 @@ final class AudioSpikeTests: XCTestCase {
         XCTAssertTrue(capture.transcript.isEmpty, "this environment has no live mic input to produce real words from")
 
         capture.stopCapturing()
+    }
+
+    /// The timeout exists to catch a dead recognizer, not a thinking owner:
+    /// a normal pause to gather a thought before speaking (or between
+    /// sentences) must not be treated as a failure. Anything under 10s was
+    /// reported as tearing the owner out of listening mid-composition.
+    func testSilenceTimeoutIsWideEnoughForAThinkingPause() {
+        XCTAssertGreaterThanOrEqual(
+            AudioCaptureEngine.silenceTimeout, 10,
+            "a pause to gather a thought must not be mistaken for a dead recognizer"
+        )
+    }
+
+    /// The watchdog must re-arm on every transcript change, not only cover
+    /// a segment that never produced anything: a recognizer that emits
+    /// words and then goes dead mid-segment - no further partials, no
+    /// error - used to be invisible, because the first partial result
+    /// disarmed the one-shot timer for good. Real partials are produced
+    /// here by offline-rendering the bundled speech clip through the tap,
+    /// then the recognizer is starved (no more audio, no endAudio) and the
+    /// failure must still surface within the silence window.
+    func testRecognizerGoingDeadAfterPartialWordsStillReportsFailure() throws {
+        let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+        try XCTSkipUnless(recognizer?.isAvailable == true, "Speech recognizer not available in this environment")
+
+        let engine = AVAudioEngine()
+        let player = AVAudioPlayerNode()
+        engine.attach(player)
+
+        let fixtureURL = try XCTUnwrap(
+            Bundle(for: AudioSpikeTests.self).url(forResource: "sample-speech", withExtension: "wav"),
+            "sample-speech.wav fixture must be bundled in the test target"
+        )
+        let sourceFile = try AVAudioFile(forReading: fixtureURL)
+        let renderFormat = sourceFile.processingFormat
+        engine.connect(player, to: engine.mainMixerNode, format: renderFormat)
+        try engine.enableManualRenderingMode(.offline, format: renderFormat, maximumFrameCount: 4096)
+
+        let capture = AudioCaptureEngine(audioEngine: engine)
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("inkwell-spike-dead-\(UUID().uuidString)")
+            .appendingPathExtension("caf")
+        addTeardownBlock { try? FileManager.default.removeItem(at: outputURL) }
+
+        let failureExpectation = expectation(description: "a recognizer dead after partial words was reported as a failure")
+        failureExpectation.assertForOverFulfill = false
+        capture.setRecognitionFailureHandler { failureExpectation.fulfill() }
+
+        try capture.beginCapture(tappingNode: player, bus: 0, to: outputURL)
+        player.scheduleFile(sourceFile, at: nil)
+        player.play()
+
+        let pumpBuffer = try XCTUnwrap(
+            AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: engine.manualRenderingMaximumFrameCount)
+        )
+        var framesRendered: AVAudioFramePosition = 0
+        while framesRendered < sourceFile.length {
+            pumpBuffer.frameLength = 0
+            let status = try engine.renderOffline(engine.manualRenderingMaximumFrameCount, to: pumpBuffer)
+            switch status {
+            case .success:
+                framesRendered += AVAudioFramePosition(pumpBuffer.frameLength)
+            case .insufficientDataFromInputNode:
+                framesRendered += AVAudioFramePosition(engine.manualRenderingMaximumFrameCount)
+            case .cannotDoInCurrentContext:
+                continue
+            case .error:
+                XCTFail("renderOffline returned .error")
+                return
+            @unknown default:
+                XCTFail("renderOffline returned an unknown status")
+                return
+            }
+        }
+
+        let producedWords = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in !capture.transcript.isEmpty },
+            object: nil
+        )
+        wait(for: [producedWords], timeout: 10)
+        XCTAssertFalse(capture.transcript.isEmpty, "the clip must produce real partial words for this to prove anything")
+
+        // From here the recognizer gets nothing more, ever - the mid-segment
+        // death the re-arming watchdog exists to catch.
+        wait(for: [failureExpectation], timeout: AudioCaptureEngine.silenceTimeout + 10)
+
+        capture.stopCapture(tappedNode: player, bus: 0)
+        engine.stop()
     }
 
     private func awaitAuthorization() throws -> Bool {

@@ -16,6 +16,10 @@ final class CaptureViewModel {
     var authorizationDenied = false
     var saveFailed = false
     var recognitionFailed = false
+    /// Decided here, not in the view: whether any words had made it into the
+    /// draft by the time recognition failed, so the alert can reassure
+    /// ("your words are here") instead of implying they were lost.
+    private(set) var recognitionFailedWithWordsHeard = false
 
     private let engine: any CaptureEngine
     private let store: InklingStore
@@ -78,8 +82,9 @@ final class CaptureViewModel {
         }
     }
 
-    /// The recognizer settled with an error, or never produced a word at
-    /// all - see `AudioCaptureEngine.silenceTimeout`. Unlike an interruption,
+    /// The recognizer settled with an error, or stopped making transcript
+    /// progress - whether it never produced a word or went dead after some;
+    /// see `AudioCaptureEngine.silenceTimeout`. Unlike an interruption,
     /// nothing about this is self-evident to the owner, so it must say so
     /// rather than just quietly dropping back to idle. Always lands in
     /// editing, even with nothing heard: `engine.stopCapturing()` already ran,
@@ -90,6 +95,7 @@ final class CaptureViewModel {
     private func captureRecognitionFailed() {
         guard mode == .listening else { return }
         beginEditing()
+        recognitionFailedWithWordsHeard = !committedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         recognitionFailed = true
     }
 
@@ -162,6 +168,13 @@ final class CaptureViewModel {
 
         let text = committedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
+            // A recording preserved on disk may be the only record of what
+            // was said. Done with nothing typed must not silently take it -
+            // only the explicit Discard action may delete it.
+            if FileManager.default.fileExists(atPath: store.audioURL(for: draftID).path) {
+                mode = .editing
+                return
+            }
             discardDraft()
             return
         }

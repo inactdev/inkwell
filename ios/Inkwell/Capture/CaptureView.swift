@@ -97,10 +97,15 @@ struct CaptureView: View {
             } message: {
                 Text("Your words are still here. Tap Done again in a moment.")
             }
-            .alert("Didn't catch that", isPresented: $viewModel.recognitionFailed) {
+            .alert(
+                viewModel.recognitionFailedWithWordsHeard ? "Dictation stopped" : "Didn't catch that",
+                isPresented: $viewModel.recognitionFailed
+            ) {
                 Button("OK", role: .cancel) {}
             } message: {
-                Text("Speech recognition didn't come through. Type it in instead, or try the well again.")
+                Text(viewModel.recognitionFailedWithWordsHeard
+                    ? "Your words are here - type the rest, or try the well again."
+                    : "Speech recognition didn't come through. Type it in instead, or try the well again.")
             }
 
             if viewModel.showConfirmation {

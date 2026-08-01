@@ -15,10 +15,11 @@ protocol CaptureEngine: AnyObject, Sendable {
     /// Called when the system takes the audio session away mid-segment.
     func setInterruptionHandler(_ handler: @escaping @Sendable () -> Void)
     /// Called when a segment can no longer produce a transcript: the
-    /// recognizer settled with an error, or produced nothing at all within
-    /// `AudioCaptureEngine.silenceTimeout` of starting. Without this, a dead
-    /// recognizer and a quietly-working one are indistinguishable from the
-    /// UI: both just show "Listening…" forever.
+    /// recognizer settled with an error, or made no transcript progress for
+    /// `AudioCaptureEngine.silenceTimeout` - whether it never produced a
+    /// word or went dead after some. Without this, a dead recognizer and a
+    /// quietly-working one are indistinguishable from the UI: both just
+    /// show "Listening…" forever.
     func setRecognitionFailureHandler(_ handler: @escaping @Sendable () -> Void)
 }
 
@@ -40,12 +41,13 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
         case audioFileCreationFailed
     }
 
-    /// How long a segment can run without producing a single word before
-    /// it's treated as dead rather than quietly working - e.g. no audio is
-    /// actually reaching the recognizer. Long enough that a normal pause
-    /// before speaking doesn't trip it; short enough that the owner isn't
-    /// left staring at "Listening…" indefinitely.
-    static let silenceTimeout: TimeInterval = 6
+    /// How long a segment can run without any transcript progress - measured
+    /// from the last partial result, or from the segment's start if none has
+    /// arrived yet - before the recognizer is treated as dead rather than
+    /// quietly working, e.g. no audio is actually reaching it. Long enough
+    /// that a normal pause to gather a thought doesn't trip it; short enough
+    /// that the owner isn't left staring at "Listening…" indefinitely.
+    static let silenceTimeout: TimeInterval = 10
 
     private(set) var transcript: String = ""
     private(set) var isRecording = false
@@ -61,6 +63,7 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
     @ObservationIgnored private var onInterruption: (@Sendable () -> Void)?
     @ObservationIgnored private var onRecognitionFailure: (@Sendable () -> Void)?
     @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
+    @ObservationIgnored private var silenceWatchdog: Task<Void, Never>?
     /// Bumped per capture segment so a callback from a segment that has
     /// already been stopped can't publish over the current one's state.
     @ObservationIgnored private var generation = 0
@@ -168,8 +171,9 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
             let settled = result?.isFinal == true || error != nil
             Task { @MainActor in
                 guard self.generation == generation else { return }
-                if let text {
+                if let text, text != self.transcript {
                     self.transcript = text
+                    self.watchForSilence(generation: generation)
                 }
                 if settled {
                     self.onFinalTranscript?(self.transcript)
@@ -189,12 +193,17 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
     /// error, ever - if no usable audio is reaching it at all (seen in this
     /// project's headless Simulator, where the mic tap gets no signal; also
     /// possible on-device if the input format or session is wrong in some
-    /// way that doesn't throw). Without this, that looks identical to a
-    /// recognizer that's still quietly working: "Listening…" forever.
+    /// way that doesn't throw). It can equally die *after* producing words,
+    /// again with no error. Without this, either looks identical to a
+    /// recognizer that's still quietly working: "Listening…" forever. Armed
+    /// at segment start and re-armed on every transcript change, so it fires
+    /// only after `silenceTimeout` with no progress at all.
     private func watchForSilence(generation: Int) {
-        Task { @MainActor [weak self] in
+        silenceWatchdog?.cancel()
+        silenceWatchdog = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(Self.silenceTimeout))
-            guard let self, self.isRecording, self.generation == generation, self.transcript.isEmpty else { return }
+            guard !Task.isCancelled else { return }
+            guard let self, self.isRecording, self.generation == generation else { return }
             self.onRecognitionFailure?()
         }
     }
@@ -217,6 +226,8 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
             NotificationCenter.default.removeObserver(interruptionObserver)
             self.interruptionObserver = nil
         }
+        silenceWatchdog?.cancel()
+        silenceWatchdog = nil
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         recognitionRequest?.endAudio()
@@ -231,6 +242,8 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
 
     /// Test-only teardown for a tap installed on an arbitrary node (e.g. a player node).
     func stopCapture(tappedNode node: AVAudioNode, bus: Int) {
+        silenceWatchdog?.cancel()
+        silenceWatchdog = nil
         node.removeTap(onBus: bus)
         recognitionRequest?.endAudio()
         recognitionTask?.finish()

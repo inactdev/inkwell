@@ -199,6 +199,10 @@ final class CaptureViewModelTests: XCTestCase {
         try await waitUntil(timeout: 2) { !viewModel.isListening }
 
         XCTAssertTrue(viewModel.recognitionFailed, "a recognizer that produced nothing must not fail silently")
+        XCTAssertFalse(
+            viewModel.recognitionFailedWithWordsHeard,
+            "nothing was heard - the alert must not claim any words are here"
+        )
         XCTAssertEqual(viewModel.mode, .editing, "the draft must stay open to type into, not reset to idle")
         XCTAssertEqual(store.inklings.count, 0, "nothing was heard, so nothing should have been saved yet")
 
@@ -223,8 +227,67 @@ final class CaptureViewModelTests: XCTestCase {
         try await waitUntil(timeout: 2) { !viewModel.isListening }
 
         XCTAssertTrue(viewModel.recognitionFailed)
+        XCTAssertTrue(
+            viewModel.recognitionFailedWithWordsHeard,
+            "words survived - the alert must reassure, not read as though they were lost"
+        )
         XCTAssertEqual(viewModel.committedText, "Swap the buoy battery", "words heard before the failure must survive it")
         XCTAssertEqual(viewModel.mode, .editing)
+    }
+
+    /// The non-negotiable behind the whole fix: a recording preserved on
+    /// disk may be the only record of the utterance, so Done with nothing
+    /// typed must not silently take it. Only the explicit Discard action may.
+    func testEmptyDoneKeepsThePreservedAudioRatherThanSilentlyDiscarding() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+
+        // The segment's audio reached disk before recognition died.
+        let audioURL = store.audioURL(for: viewModel.draftID)
+        try Data("not really audio".utf8).write(to: audioURL)
+
+        engine.failRecognition()
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+
+        let draftID = viewModel.draftID
+        viewModel.done()
+
+        XCTAssertEqual(viewModel.mode, .editing, "Done with nothing typed must keep the draft open, not reset")
+        XCTAssertEqual(viewModel.draftID, draftID, "the draft holding the recording must survive an empty Done")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: audioURL.path),
+            "the recording is the only record of what was said - Done must never silently delete it"
+        )
+        XCTAssertEqual(store.inklings.count, 0)
+
+        // Discarding stays the owner's own explicit choice - and still works.
+        viewModel.discard()
+        XCTAssertEqual(viewModel.mode, .idle)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: audioURL.path))
+    }
+
+    /// With no recording on disk there is nothing to protect: an empty Done
+    /// still clears out and returns to idle exactly as before.
+    func testEmptyDoneWithNoAudioOnDiskStillResetsToIdle() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+
+        engine.failRecognition()
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+
+        viewModel.done()
+
+        XCTAssertEqual(viewModel.mode, .idle, "nothing typed and nothing recorded - Done has nothing to keep open")
+        XCTAssertFalse(viewModel.hasContent)
+        XCTAssertEqual(store.inklings.count, 0)
     }
 
     private func makeStore() throws -> InklingStore {
