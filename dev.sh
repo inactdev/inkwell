@@ -7,7 +7,12 @@
 # Usage:
 #   ./dev.sh              start everything (same as `up`)
 #   ./dev.sh up           start the backend AND this worktree's simulator,
-#                         Xcode project regenerated to match, in one command
+#                         Xcode project regenerated to match, app built,
+#                         installed, and launched on screen - in one command
+#   ./dev.sh up -d        same, all the way to the app on screen, but the
+#                         backend is left running in the background and the
+#                         command returns instead of holding the terminal
+#                         (`--detach`/`--wait` too - they're compose's flags)
 #   ./dev.sh down         stop it, and delete this worktree's simulator+DerivedData
 #   ./dev.sh info         print this worktree's derived port/storage/etc
 #   ./dev.sh ios generate regenerate the Xcode project alone, backend URL baked in
@@ -28,6 +33,269 @@ source scripts/inkwell-env.sh
 inkwell_derive
 cd "$INKWELL_WORKTREE"
 
+# Polls the backend's own healthcheck endpoint (same one docker-compose.yml
+# uses) so the app isn't installed and launched against a backend that isn't
+# actually answering yet. Bounded generously rather than tightly: the very
+# first run pulls a base image and builds the backend image, which routinely
+# takes minutes. What keeps that from being a long stall when something is
+# actually wrong is the liveness check the caller passes in ("$@", run as a
+# command) - once it says the backend is gone, it's never arriving and
+# there's nothing left to wait for.
+#
+# The bound is wall-clock, not attempts: an attempt costs anything from
+# instant to the curl timeouts below, so counting them would let the real
+# wait run many times longer than the number the give-up message reports.
+inkwell_wait_for_backend() {
+  local start=$SECONDS elapsed=0
+  local -a is_alive=("$@")
+  while [ "$elapsed" -lt 600 ]; do
+    curl -fsS --connect-timeout 2 --max-time 5 -o /dev/null "$INKWELL_BACKEND_URL/inklings" 2>/dev/null && return 0
+    if ! "${is_alive[@]}"; then
+      echo "inkwell: the backend exited before it became reachable" >&2
+      return 1
+    fi
+    sleep 1
+    elapsed=$((SECONDS - start))
+  done
+  echo "inkwell: gave up waiting for the backend after ${elapsed}s" >&2
+  return 1
+}
+
+# Tears the backgrounded compose down and waits for it to finish doing so.
+# Shared by the INT and TERM traps, which differ only in the exit status they
+# report, never in what they stop.
+inkwell_stop_compose() {
+  trap - INT TERM
+  kill "$1" 2>/dev/null || true
+  wait "$1" 2>/dev/null || true
+}
+
+# The two liveness checks a caller can pass. Which one is right depends on
+# how compose was started: the foreground form has a compose process of its
+# own to watch, while the detached form's compose has already exited on
+# purpose, so the containers themselves are all that's left to ask.
+inkwell_compose_pid_alive() {
+  kill -0 "$1" 2>/dev/null
+}
+
+inkwell_compose_containers_alive() {
+  [ -n "$(docker compose ps --status running --status restarting --quiet 2>/dev/null)" ]
+}
+
+# `-d`/`--detach` (and `--wait`, which implies it) are compose's flags, not
+# this script's, so they arrive inside the passthrough args - and they change
+# the shape of everything after them: compose returns as soon as the
+# containers are up instead of staying in the foreground, so there is no
+# process to background, signal, or wait on.
+inkwell_args_request_detach() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --) return 1 ;;
+      --detach|--detach=true|--detach=1|--wait) return 0 ;;
+      -[!-]*)
+        case "$arg" in
+          *d*) return 0 ;;
+        esac
+        ;;
+    esac
+  done
+  return 1
+}
+
+# Waits for the backend to actually answer, then - only when this run has a
+# simulator to put it on - builds, installs, and launches the app.
+#
+# Non-zero means one thing: the backend never answered. That check deliberately
+# does not depend on whether the iOS half was prepared, and the `ios_ready`
+# test lives in here rather than at the call sites so it cannot drift back into
+# gating it: "did the backend come up" is the question every caller asks, and a
+# backend-only run (no Xcode, no xcodegen, failed simulator prep) still has to
+# answer it. The iOS half stays best-effort in both directions - a
+# build/install/launch that fails against a live backend is still a success.
+inkwell_launch_when_backend_ready() {
+  local ios_ready=$1 udid=$2
+  shift 2
+  if ! inkwell_wait_for_backend "$@"; then
+    if [ "$ios_ready" -eq 1 ]; then
+      echo "inkwell: backend not reachable - skipping app build, install, and launch" >&2
+    fi
+    return 1
+  fi
+  if [ "$ios_ready" -eq 1 ]; then
+    inkwell_build_install_launch "$udid" || true
+  fi
+}
+
+# True only when some device other than this worktree's is booted - i.e. when
+# Simulator.app has a second device window that could be the one in front.
+# "Simulator.app is already running" does not answer that on its own: this
+# worktree's own previous ./dev.sh leaves it running too.
+inkwell_other_lane_sim_booted() {
+  local others
+  others=$(xcrun simctl list devices booted 2>/dev/null | grep -F '(Booted)' | grep -vF "$1") || others=""
+  [ -n "$others" ]
+}
+
+# Simulator.app shows every booted device in its own window inside one
+# process - `open -a Simulator --args -CurrentDeviceUDID` only picks which of
+# those wins focus on a *cold* launch; once the app is already running (the
+# case this exists for - another worktree's lane got there first) macOS just
+# activates the existing process and the flag is discarded, so this worktree's
+# window may not be the one that comes forward. This targets Simulator's own
+# AppleScript dictionary directly (a settable window `index`, "ordered front
+# to back") rather than going through System Events, so it doesn't need the
+# Accessibility permission System Events window-scripting requires - only the
+# same Apple-Events authorization `activate` already relies on.
+#
+# CONFIRMED NON-FUNCTIONAL on Xcode 16.4 - not merely unverified. Simulator's
+# dictionary advertises the Cocoa Standard Suite's `window` class (that is what
+# made this look like the right mechanism), but Simulator.app does not actually
+# implement the element: `every window` fails with -1728 (errAENoSuchObject) on
+# every attempt, and `count of windows` answers `missing value`. The repeat
+# below therefore always errors out before it can set any window's index, so on
+# this Xcode version this worktree's window is *not* brought forward when
+# another lane already had Simulator.app open. Reproduced on four separate
+# ./dev.sh runs in the real two-lane case and standalone on repeat. Not a
+# permissions or headless-session artifact, which was the obvious suspect and
+# was ruled out two ways: the `activate` below exits 0 in the same script (so
+# Apple Events are authorized), and the identical query against Finder - an app
+# that does implement the element - returns a real count in the same session.
+# The app itself still launches and is visible in its own Simulator window
+# regardless (confirmed on real hardware); it just may sit behind another
+# lane's window.
+#
+# Kept rather than deleted, because it is harmless (one bounded call), it is
+# the piece that would start working if a later Xcode implements the element,
+# and the stderr report below is what would say so - this comment cannot go
+# stale silently. Note that osascript exiting 0 would mean the raise was
+# *issued*, not that the right window came forward; nothing here can see the
+# screen.
+#
+# The watchdog is not optional, and stays whatever the element does: querying
+# Simulator's window list over AppleScript has also been seen to hang rather
+# than answer, and a wrong-frontmost-window miss is a far smaller problem than
+# turning "one command, terminal comes back" into "one command that might never
+# return." It is self-contained: its `sleep` fires the kill only when it
+# actually wins the race, and the watchdog's own output goes nowhere, so
+# nothing it spawns can outlive this function still holding the stdout dev.sh
+# inherited - `out=$( ./dev.sh up -d )` returns when dev.sh does, not five
+# seconds later.
+inkwell_focus_sim_window() {
+  local sim_name=$1 osa_pid watchdog_pid osa_status=0 osa_out result
+  osa_out="${TMPDIR:-/tmp}/inkwell-focus-$INKWELL_PROJECT_NAME.out"
+  osascript >"$osa_out" 2>&1 <<OSA &
+tell application "Simulator"
+  activate
+  repeat with w in windows
+    if name of w contains "$sim_name" then
+      set index of w to 1
+      return "raised"
+    end if
+  end repeat
+end tell
+return "no-window"
+OSA
+  osa_pid=$!
+  ( sleep 5 && kill "$osa_pid" 2>/dev/null ) >/dev/null 2>&1 &
+  watchdog_pid=$!
+  wait "$osa_pid" 2>/dev/null || osa_status=$?
+  pkill -P "$watchdog_pid" 2>/dev/null || true
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  result=$(head -n 1 "$osa_out" 2>/dev/null || true)
+  rm -f "$osa_out"
+  case "$osa_status:$result" in
+    0:raised)
+      echo "inkwell: told Simulator to bring $sim_name's window to the front" >&2
+      ;;
+    0:*)
+      echo "inkwell: Simulator has no window named for $sim_name - its window may not be frontmost" >&2
+      ;;
+    143:*)
+      echo "inkwell: Simulator's window list did not answer within 5s - $sim_name's window may not be frontmost" >&2
+      ;;
+    *)
+      echo "inkwell: could not raise $sim_name's Simulator window (osascript exit $osa_status: ${result:-no output})" >&2
+      ;;
+  esac
+  return 0
+}
+
+# Builds (incrementally - xcodebuild itself skips work that's already up to
+# date, so a rerun with nothing changed is fast), installs, and launches the
+# app on this worktree's simulator, then brings Simulator.app to the front so
+# it's actually visible rather than booted-but-hidden.
+inkwell_build_install_launch() {
+  local udid=$1 app_path log raise_focus=0
+  if ! command -v xcodebuild >/dev/null 2>&1; then
+    echo "inkwell: xcodebuild not found - skipping app launch" >&2
+    return 1
+  fi
+  echo "inkwell: building Inkwell for the simulator" >&2
+  log="${TMPDIR:-/tmp}/inkwell-build-$INKWELL_PROJECT_NAME.log"
+  if ! xcodebuild build \
+    -project ios/Inkwell.xcodeproj \
+    -scheme Inkwell \
+    -destination "id=$udid" \
+    -derivedDataPath "$INKWELL_DERIVED_DATA" \
+    >"$log" 2>&1; then
+    echo "inkwell: build failed - not installing or launching (see $log)" >&2
+    tail -n 40 "$log" >&2
+    return 1
+  fi
+  app_path="$INKWELL_DERIVED_DATA/Build/Products/Debug-iphonesimulator/Inkwell.app"
+  if [ ! -d "$app_path" ]; then
+    echo "inkwell: built app not found at $app_path - not installing" >&2
+    return 1
+  fi
+  if ! xcrun simctl install "$udid" "$app_path"; then
+    echo "inkwell: installing Inkwell on $INKWELL_SIM_NAME failed - not launching" >&2
+    return 1
+  fi
+  # Which of the two focus cases this run is has to be sampled *before* the
+  # `open` below - which is itself what makes Simulator.app running when it
+  # wasn't - and by exact process name: a bare `pgrep Simulator` or a `pgrep -f
+  # Simulator` also matches SimulatorTrampoline and the CoreSimulator XPC
+  # services, which are up whether or not Simulator.app itself is, so either
+  # would report "already running" on every single run.
+  #
+  # Already-running is necessary but not sufficient: this worktree's own
+  # previous ./dev.sh leaves Simulator.app open, so the ordinary warm rerun of
+  # the single-lane command matches it too, and there the app has exactly one
+  # device window - nothing to pick between and nothing to report. What makes
+  # focus genuinely ambiguous is a *second* booted device's window, so that is
+  # what the raise (and its diagnostic) is actually gated on.
+  if pgrep -qxU "$(id -u)" Simulator && inkwell_other_lane_sim_booted "$udid"; then
+    raise_focus=1
+  fi
+  # Covers the cold-launch case (Simulator.app not running yet): picks this
+  # worktree's device as the one that gets focus when the app starts up.
+  # `open -n` does not buy a second Simulator.app instance to sidestep the
+  # already-running case below - verified on Xcode 16.4: `-n` returns 0 and no
+  # new process appears, so there is always exactly one Simulator.app to aim.
+  open -a Simulator --args -CurrentDeviceUDID "$udid" || true
+  # Covers the two-lane case, and only that one: see inkwell_focus_sim_window
+  # above. A cold launch has already been aimed by -CurrentDeviceUDID, and
+  # Simulator.app answers Apple events before it has necessarily built a window
+  # for each booted device - so asking there would spend the watchdog's patience
+  # on a question whose answer doesn't matter. A single-lane rerun has only this
+  # worktree's own window to come forward, so the raise would have nothing to
+  # choose and its diagnostic nothing to warn about - it would just be noise on
+  # stderr for the flagship command's most ordinary path.
+  if [ "$raise_focus" -eq 1 ]; then
+    inkwell_focus_sim_window "$INKWELL_SIM_NAME"
+  fi
+  # Without --terminate-running-process, a copy left running by an earlier
+  # ./dev.sh is merely brought to the front: the bundle on disk would be the
+  # build just installed while the pixels on screen are still the previous one.
+  if ! xcrun simctl launch --terminate-running-process "$udid" "$INKWELL_BUNDLE_ID" >/dev/null; then
+    echo "inkwell: launching Inkwell on $INKWELL_SIM_NAME failed" >&2
+    return 1
+  fi
+  echo "inkwell: Inkwell launched on $INKWELL_SIM_NAME" >&2
+}
+
 cmd="${1:-up}"
 [ $# -gt 0 ] && shift || true
 
@@ -40,17 +308,76 @@ case "$cmd" in
     # port: both are derived and applied together, every time. Best-effort:
     # a missing Xcode/xcodegen must not stop the backend from starting.
     export INKWELL_BACKEND_URL
+    ios_ready=0
+    udid=""
     if command -v xcodegen >/dev/null 2>&1 && [ -d ios ]; then
       if inkwell_regenerate_ios_project && udid=$(inkwell_ensure_worktree_sim); then
         inkwell_boot_sim "$udid"
         echo "inkwell: simulator $INKWELL_SIM_NAME ($udid) ready"
+        ios_ready=1
       else
         echo "inkwell: could not prepare the iOS side - continuing, the backend still starts" >&2
       fi
     else
       echo "inkwell: xcodegen not found or ios/ missing - skipping the iOS side, backend only" >&2
     fi
-    exec docker compose up --build "$@"
+
+    if inkwell_args_request_detach "$@"; then
+      # Nothing to background: compose exits on its own the moment the
+      # containers are up, and they keep running without this script. The app
+      # still gets built, installed, and launched - `up -d` differs in who
+      # holds the backend open, not in what the command is for.
+      docker compose up --build "$@"
+      # Detached mode has no `wait` to inherit a status from, so this is the
+      # only place the "containers came up but the backend never answered"
+      # outcome can reach a caller - without it, the scriptable form of the
+      # command reports success for a run that never produced a usable backend.
+      # Runs on every path, iOS tooling present or not: handing the terminal
+      # back makes this status the whole report.
+      rc=0
+      inkwell_launch_when_backend_ready "$ios_ready" "$udid" inkwell_compose_containers_alive || rc=$?
+      exit "$rc"
+    fi
+
+    # Backgrounded rather than exec'd, so there's a point after the backend
+    # starts to build/install/launch the app. That costs the plain signal
+    # path: bash sets SIGINT to ignored for asynchronous commands in a script,
+    # so Ctrl-C only still reaches compose because compose re-arms SIGINT
+    # itself - not something this script controls. The trap is therefore
+    # load-bearing, not belt-and-suspenders. It also waits for the teardown it
+    # started: a signal makes the `wait` below return immediately, so without
+    # waiting here the prompt comes back while containers are still stopping
+    # and the next ./dev.sh races the leftovers over the same project.
+    #
+    # A real terminal Ctrl-C sends SIGINT to the whole foreground process
+    # group, so compose gets SIGINT directly *and* this trap sends it a
+    # second, different signal (SIGTERM) moments later - two signals where
+    # the old `exec` form delivered exactly one. Verified this doesn't
+    # escalate compose's "press Ctrl+C again to force" behavior: docker
+    # compose v5.0.1 counts SIGINT and SIGTERM into one shared counter and
+    # forcefully exits on the third signal of either type ("got 3
+    # SIGTERM/SIGINTs, forcefully exiting"). It is not keyed to a second
+    # SIGINT specifically - a second SIGINT does not escalate, and a
+    # second signal of another type still counts toward the three. Two
+    # signals is under that threshold either way. Confirmed against a
+    # container with a 6s SIGTERM trap: INT, INT+INT and INT+TERM each ran
+    # the full grace period, while INT+TERM+TERM and INT+INT+INT both cut
+    # it short. Safe as written - but a third signal here would not be.
+    docker compose up --build "$@" &
+    compose_pid=$!
+    # Two traps rather than one armed for both signals, so the status reported
+    # says which signal actually arrived under the usual 128+signum convention:
+    # Ctrl-C is 130, a supervisor's `kill` is 143. The teardown is identical.
+    trap 'inkwell_stop_compose "$compose_pid"; exit 130' INT
+    trap 'inkwell_stop_compose "$compose_pid"; exit 143' TERM
+
+    # Unlike the detached branch, an unreachable backend must not end the script
+    # here: compose is still running as a background child, and exiting now
+    # would orphan it and drop the "Ctrl-C stops the backend" contract. The
+    # `wait` below owns this path's exit status and reports compose's own.
+    inkwell_launch_when_backend_ready "$ios_ready" "$udid" inkwell_compose_pid_alive "$compose_pid" || true
+
+    wait "$compose_pid"
     ;;
   down)
     # A cloned simulator costs 1-3GB, so bringing the stack down takes the
@@ -110,7 +437,11 @@ EOF
           # app's captures (and nothing else - not TCC, not the backend's
           # storage) keeps the window the test's to spend.
           container=$(xcrun simctl get_app_container "$udid" "$INKWELL_BUNDLE_ID" data 2>/dev/null) || container=""
-          if [ -n "$container" ]; then
+          if [ -n "$container" ] && [ -d "$container/Documents/Inklings" ]; then
+            # One inkling is a .json plus, when it was a voice capture, a
+            # sibling .m4a - counting every file would report double.
+            capture_count=$(find "$container/Documents/Inklings" -type f -name '*.json' | wc -l | tr -d ' ')
+            echo "inkwell: clearing $capture_count captured inkling(s) from $INKWELL_SIM_NAME before OfflineSyncUITests runs" >&2
             rm -rf "$container/Documents/Inklings"
           fi
           mkdir -p "$INKWELL_STORAGE_DIR"

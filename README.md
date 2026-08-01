@@ -23,19 +23,33 @@ port and data. `./dev.sh` is the only documented way to run any of it; see
 Requires Docker with the `docker compose` v2 plugin - the backend and its storage run in a
 container per worktree.
 
+One command, nothing to run by hand afterwards:
+
 ```
 ./dev.sh
 ```
 
 Regenerates the Xcode project with this worktree's backend URL baked in, ensures and boots this
-worktree's simulator (a 1-3GB `simctl clone` the first time), then starts the backend in the
-foreground, on this worktree's own port and storage - no more typing than `go run .` was. The iOS
-half is best-effort: without Xcode/xcodegen it says so and brings up the backend alone.
-`./dev.sh info` prints exactly what got derived; `./dev.sh down` stops it.
+worktree's simulator (a 1-3GB `simctl clone` the first time), starts the backend in the foreground
+on this worktree's own port and storage, then builds, installs, and launches the app on that
+simulator and brings Simulator.app to the front - Inkwell ends up on screen, ready to tap, with no
+further steps. `./dev.sh info` prints exactly what got derived. Ctrl-C stops the backend and leaves
+this worktree's simulator booted with the app still on it; `./dev.sh down` stops the backend *and*
+deletes that simulator and its DerivedData, which is what reclaims the 1-3GB a clone costs.
+`./dev.sh up -d` does every one of those steps too, up to and including Inkwell on screen, but
+leaves the backend running in the background and gives the terminal back instead of holding it -
+and, being the form scripts drive, it exits non-zero if the backend never came up.
+The iOS half is best-effort: without Xcode/xcodegen it says so and brings up the backend alone.
+With two lanes running at once, Simulator.app is shared and, on Xcode 16.4, dev.sh cannot pick which
+lane's window ends up in front - this worktree's window is there with the app running in it, just
+maybe behind the other one (see `docs/runtime-isolation.md`).
 `go run .` from `backend/` (see `backend/README.md`) still works for quick backend-only iteration,
 just without the isolation - fine for a single lane, not for running two at once.
 
 ## Running the iOS app
+
+`./dev.sh` above already builds, installs, and launches it on this worktree's simulator - this is
+the Xcode route, for working on the app itself.
 
 Requires Xcode 16.4 and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install
 xcodegen`) - the `.xcodeproj` is generated from `ios/project.yml` and isn't committed.

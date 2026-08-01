@@ -21,9 +21,10 @@ layers that both derive from the same worktree hash but use different mechanisms
    can be containerized, so isolation here is a distinct DerivedData path plus a dedicated cloned
    simulator device per worktree, not a container boundary.
 
-A lane never chooses between them or has to remember which is which - `./dev.sh` and
-`./dev.sh ios ...` cover layer 1 and layer 2 respectively, and both derive from the same source of
-truth (`scripts/inkwell-env.sh`).
+A lane never chooses between them or has to remember which is which - plain `./dev.sh` spans both
+(it builds and installs the app on this worktree's simulator as well as bringing the backend up),
+and `./dev.sh ios ...` exposes layer 2 on its own. Both derive from the same source of truth
+(`scripts/inkwell-env.sh`).
 
 ## How identity is derived
 
@@ -72,8 +73,24 @@ registry to update - the worktree's own path *is* the registry key.
 
 ```
 ./dev.sh                regenerate the Xcode project, ensure + boot this worktree's simulator,
-                          then start the backend (foreground; Ctrl-C stops it). The iOS half is
-                          best-effort: no Xcode/xcodegen and it continues backend-only.
+                          start the backend (foreground; Ctrl-C stops it and exits 130,
+                          a kill of the dev.sh PID exits 143), then build, install,
+                          and launch the app on that simulator and bring Simulator.app to the
+                          front - it ends with Inkwell on screen, not just the environment
+                          prepared. Best-effort throughout: no Xcode/xcodegen and it continues
+                          backend-only, and a failed build/install/launch is logged without
+                          taking the backend down with it. Two lanes at once: see "Two lanes,
+                          one Simulator.app" below.
+./dev.sh up -d           the same run, app on screen included, except the backend is left
+                          running in the background and the command returns rather than
+                          holding the terminal (--detach/--wait behave the same way).
+                          ./dev.sh down is then what stops it. Being the form scripts
+                          drive, it exits non-zero when the backend never became
+                          reachable - on every path, including the backend-only one
+                          above, since that status is all a caller gets once the
+                          terminal comes back. A backend that is up but whose
+                          build/install/launch failed still exits 0 - that half stays
+                          best-effort, as above.
 ./dev.sh down            stop it, and delete this worktree's simulator + DerivedData
 ./dev.sh ps               show this worktree's backend container
 ./dev.sh logs             follow this worktree's backend logs
@@ -84,7 +101,8 @@ registry to update - the worktree's own path *is* the registry key.
                           Also brings this worktree's backend container up detached and
                           launches tools/blackhole-proxy in front of it, both for
                           OfflineSyncUITests, and clears the app's captures on that device
-                          first so the proxy's black-hole window is that test's to spend.
+                          first - announcing how many - so the proxy's black-hole window is
+                          that test's to spend.
 ./dev.sh ios build        xcodebuild build, same isolation
 ./dev.sh ios clean        backstop: delete this worktree's simulator + DerivedData now
 ```
@@ -94,6 +112,28 @@ quick iteration on the backend alone - but it isn't isolated from another worktr
 and it's the same reason `xcodegen generate` / `xcodebuild` shouldn't be run directly either: they
 lose the per-worktree derivation. `./dev.sh` is the only path that carries it, and it's not more
 typing than what it replaces.
+
+### Two lanes, one Simulator.app
+
+Devices are per-worktree; Simulator.app itself is not. It is effectively single-instance, so when
+another worktree already has it open, macOS activates that instance rather than starting a second
+one. This worktree's device still gets its own window, and the app still builds, installs, launches,
+and is visible in it - the only thing at stake is which lane's window is frontmost.
+
+On Xcode 16.4, `dev.sh` cannot decide that. Its raise targets Simulator's own AppleScript
+dictionary, which advertises a `windows` element that Simulator.app does not actually implement:
+the query fails with -1728 (`errAENoSuchObject`) every time. That is confirmed, not assumed, and
+ruled out as a permissions or headless-session artifact two ways (the `activate` in the same script
+succeeds, and the identical query against Finder returns a real count) - `inkwell_focus_sim_window`
+in `dev.sh` holds the evidence. So expect this worktree's window to be present and usable, just not
+necessarily in front of the other lane's; bring it forward by hand.
+
+`dev.sh` only attempts the raise when this two-lane case is actually the one it is in: Simulator.app
+already running *and* some device other than this worktree's also booted. A cold launch is aimed by
+`-CurrentDeviceUDID` instead, and a single-lane rerun has only one device window to begin with -
+neither says anything. When it does attempt it, it prints the outcome on stderr (today, always that
+osascript error), so a later Xcode that implements the element shows up as a changed message rather
+than as a silent assumption.
 
 ## How the app finds its own backend
 
