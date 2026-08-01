@@ -48,6 +48,9 @@ just without the isolation - fine for a single lane, not for running two at once
 
 ## Running the iOS app
 
+`./dev.sh` above already builds, installs, and launches it on this worktree's simulator - this is
+the Xcode route, for working on the app itself.
+
 Requires Xcode 16.4 and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install
 xcodegen`) - the `.xcodeproj` is generated from `ios/project.yml` and isn't committed.
 

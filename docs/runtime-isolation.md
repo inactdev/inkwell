@@ -84,25 +84,21 @@ registry to update - the worktree's own path *is* the registry key.
                           single-instance, so if another worktree already has it open,
                           macOS activates that instance instead of starting a second.
                           This worktree's device still gets its own window and the app
-                          still launches and is visible on it. dev.sh also tries to raise
-                          that window (inkwell_focus_sim_window in dev.sh), but on Xcode
-                          16.4 that raise does not work and cannot: Simulator.app does
-                          not implement the AppleScript `windows` element, so the query
-                          fails with -1728 (errAENoSuchObject) every time, before any
-                          window's index is set. Confirmed on four separate ./dev.sh runs
-                          in the real two-lane case, and ruled out as a permissions or
-                          headless-session artifact - `activate` succeeds in the same
-                          script, and the identical query against Finder (which does
-                          implement the element) returns a real count. So with two lanes
-                          at once, expect this worktree's window to be there and usable,
-                          but not necessarily in front of the other lane's - bring it
-                          forward by hand. The raise is
-                          attempted only when Simulator.app was already running before
-                          this run started - a cold launch is aimed by -CurrentDeviceUDID
-                          instead and says nothing. dev.sh prints the outcome it got on
-                          stderr (today, always that osascript error), so a later Xcode
-                          that does implement the element would show up as a changed
-                          message rather than as a silent assumption.
+                          still launches and is visible on it, but on Xcode 16.4 dev.sh
+                          cannot make that window the frontmost one: Simulator.app does
+                          not implement the AppleScript `windows` element the raise needs,
+                          so the query fails with -1728 (errAENoSuchObject) every time.
+                          Confirmed, and ruled out as a permissions or headless-session
+                          artifact, in inkwell_focus_sim_window in dev.sh, which holds
+                          that evidence. So expect this worktree's window to be there and
+                          usable, but not necessarily in front of the other lane's - bring
+                          it forward by hand. The raise is attempted only when
+                          Simulator.app was already running before this run started - a
+                          cold launch is aimed by -CurrentDeviceUDID instead and says
+                          nothing. dev.sh prints the outcome it got on stderr (today,
+                          always that osascript error), so a later Xcode that does
+                          implement the element would show up as a changed message rather
+                          than as a silent assumption.
 ./dev.sh up -d           the same run, app on screen included, except the backend is left
                           running in the background and the command returns rather than
                           holding the terminal (`--detach`/`--wait` behave the same way).
