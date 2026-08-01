@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared by dev.sh: derives everything that has to be unique per worktree
 # (compose project name, published port, storage path, simulator name) from
 # the worktree's own filesystem path, so two lanes running this repo at once

@@ -127,6 +127,16 @@ inkwell_launch_when_backend_ready() {
   fi
 }
 
+# True only when some device other than this worktree's is booted - i.e. when
+# Simulator.app has a second device window that could be the one in front.
+# "Simulator.app is already running" does not answer that on its own: this
+# worktree's own previous ./dev.sh leaves it running too.
+inkwell_other_lane_sim_booted() {
+  local others
+  others=$(xcrun simctl list devices booted 2>/dev/null | grep -F '(Booted)' | grep -vF "$1") || others=""
+  [ -n "$others" ]
+}
+
 # Simulator.app shows every booted device in its own window inside one
 # process - `open -a Simulator --args -CurrentDeviceUDID` only picks which of
 # those wins focus on a *cold* launch; once the app is already running (the
@@ -217,7 +227,7 @@ OSA
 # app on this worktree's simulator, then brings Simulator.app to the front so
 # it's actually visible rather than booted-but-hidden.
 inkwell_build_install_launch() {
-  local udid=$1 app_path log sim_was_running=0
+  local udid=$1 app_path log raise_focus=0
   if ! command -v xcodebuild >/dev/null 2>&1; then
     echo "inkwell: xcodebuild not found - skipping app launch" >&2
     return 1
@@ -244,12 +254,20 @@ inkwell_build_install_launch() {
     return 1
   fi
   # Which of the two focus cases this run is has to be sampled *before* the
-  # `open` below, and by exact process name: a bare `pgrep Simulator` or a
-  # `pgrep -f Simulator` also matches SimulatorTrampoline and the CoreSimulator
-  # XPC services, which are up whether or not Simulator.app itself is, so
-  # either would report "already running" on every single run.
-  if pgrep -qxU "$(id -u)" Simulator; then
-    sim_was_running=1
+  # `open` below - which is itself what makes Simulator.app running when it
+  # wasn't - and by exact process name: a bare `pgrep Simulator` or a `pgrep -f
+  # Simulator` also matches SimulatorTrampoline and the CoreSimulator XPC
+  # services, which are up whether or not Simulator.app itself is, so either
+  # would report "already running" on every single run.
+  #
+  # Already-running is necessary but not sufficient: this worktree's own
+  # previous ./dev.sh leaves Simulator.app open, so the ordinary warm rerun of
+  # the single-lane command matches it too, and there the app has exactly one
+  # device window - nothing to pick between and nothing to report. What makes
+  # focus genuinely ambiguous is a *second* booted device's window, so that is
+  # what the raise (and its diagnostic) is actually gated on.
+  if pgrep -qxU "$(id -u)" Simulator && inkwell_other_lane_sim_booted "$udid"; then
+    raise_focus=1
   fi
   # Covers the cold-launch case (Simulator.app not running yet): picks this
   # worktree's device as the one that gets focus when the app starts up.
@@ -257,14 +275,15 @@ inkwell_build_install_launch() {
   # already-running case below - verified on Xcode 16.4: `-n` returns 0 and no
   # new process appears, so there is always exactly one Simulator.app to aim.
   open -a Simulator --args -CurrentDeviceUDID "$udid" || true
-  # Covers the already-running case, and only that one: see
-  # inkwell_focus_sim_window above. A cold launch has already been aimed by
-  # -CurrentDeviceUDID, and Simulator.app answers Apple events before it has
-  # necessarily built a window for each booted device - so asking there would
-  # spend the watchdog's patience on a question whose answer doesn't matter, and
-  # would put the raise's diagnostic on stderr for the ordinary single-lane run,
-  # where nothing was ever wrong with which window is in front.
-  if [ "$sim_was_running" -eq 1 ]; then
+  # Covers the two-lane case, and only that one: see inkwell_focus_sim_window
+  # above. A cold launch has already been aimed by -CurrentDeviceUDID, and
+  # Simulator.app answers Apple events before it has necessarily built a window
+  # for each booted device - so asking there would spend the watchdog's patience
+  # on a question whose answer doesn't matter. A single-lane rerun has only this
+  # worktree's own window to come forward, so the raise would have nothing to
+  # choose and its diagnostic nothing to warn about - it would just be noise on
+  # stderr for the flagship command's most ordinary path.
+  if [ "$raise_focus" -eq 1 ]; then
     inkwell_focus_sim_window "$INKWELL_SIM_NAME"
   fi
   # Without --terminate-running-process, a copy left running by an earlier

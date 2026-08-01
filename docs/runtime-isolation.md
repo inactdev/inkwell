@@ -79,26 +79,8 @@ registry to update - the worktree's own path *is* the registry key.
                           front - it ends with Inkwell on screen, not just the environment
                           prepared. Best-effort throughout: no Xcode/xcodegen and it continues
                           backend-only, and a failed build/install/launch is logged without
-                          taking the backend down with it.
-                          One caveat with two lanes at once: Simulator.app is effectively
-                          single-instance, so if another worktree already has it open,
-                          macOS activates that instance instead of starting a second.
-                          This worktree's device still gets its own window and the app
-                          still launches and is visible on it, but on Xcode 16.4 dev.sh
-                          cannot make that window the frontmost one: Simulator.app does
-                          not implement the AppleScript `windows` element the raise needs,
-                          so the query fails with -1728 (errAENoSuchObject) every time.
-                          Confirmed, and ruled out as a permissions or headless-session
-                          artifact, in inkwell_focus_sim_window in dev.sh, which holds
-                          that evidence. So expect this worktree's window to be there and
-                          usable, but not necessarily in front of the other lane's - bring
-                          it forward by hand. The raise is attempted only when
-                          Simulator.app was already running before this run started - a
-                          cold launch is aimed by -CurrentDeviceUDID instead and says
-                          nothing. dev.sh prints the outcome it got on stderr (today,
-                          always that osascript error), so a later Xcode that does
-                          implement the element would show up as a changed message rather
-                          than as a silent assumption.
+                          taking the backend down with it. Two lanes at once: see "Two lanes,
+                          one Simulator.app" below.
 ./dev.sh up -d           the same run, app on screen included, except the backend is left
                           running in the background and the command returns rather than
                           holding the terminal (`--detach`/`--wait` behave the same way).
@@ -130,6 +112,28 @@ quick iteration on the backend alone - but it isn't isolated from another worktr
 and it's the same reason `xcodegen generate` / `xcodebuild` shouldn't be run directly either: they
 lose the per-worktree derivation. `./dev.sh` is the only path that carries it, and it's not more
 typing than what it replaces.
+
+### Two lanes, one Simulator.app
+
+Devices are per-worktree; Simulator.app itself is not. It is effectively single-instance, so when
+another worktree already has it open, macOS activates that instance rather than starting a second
+one. This worktree's device still gets its own window, and the app still builds, installs, launches,
+and is visible in it - the only thing at stake is which lane's window is frontmost.
+
+On Xcode 16.4, `dev.sh` cannot decide that. Its raise targets Simulator's own AppleScript
+dictionary, which advertises a `windows` element that Simulator.app does not actually implement:
+the query fails with -1728 (`errAENoSuchObject`) every time. That is confirmed, not assumed, and
+ruled out as a permissions or headless-session artifact two ways (the `activate` in the same script
+succeeds, and the identical query against Finder returns a real count) - `inkwell_focus_sim_window`
+in `dev.sh` holds the evidence. So expect this worktree's window to be present and usable, just not
+necessarily in front of the other lane's; bring it forward by hand.
+
+`dev.sh` only attempts the raise when this two-lane case is actually the one it is in: Simulator.app
+already running *and* some device other than this worktree's also booted. A cold launch is aimed by
+`-CurrentDeviceUDID` instead, and a single-lane rerun has only one device window to begin with -
+neither says anything. When it does attempt it, it prints the outcome on stderr (today, always that
+osascript error), so a later Xcode that implements the element shows up as a changed message rather
+than as a silent assumption.
 
 ## How the app finds its own backend
 
