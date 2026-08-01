@@ -270,6 +270,10 @@ final class CaptureViewModelTests: XCTestCase {
         viewModel.done()
 
         XCTAssertEqual(viewModel.mode, .editing, "Done with nothing typed must keep the draft open, not reset")
+        XCTAssertTrue(
+            viewModel.showEmptyDoneHint,
+            "the refusal must be visible - a Done that silently does nothing reads as broken"
+        )
         XCTAssertEqual(viewModel.draftID, draftID, "the draft holding the recording must survive an empty Done")
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: audioURL.path),
@@ -304,6 +308,7 @@ final class CaptureViewModelTests: XCTestCase {
         viewModel.done()
 
         XCTAssertEqual(viewModel.mode, .idle, "an empty draft the owner walked away from must not stay open")
+        XCTAssertFalse(viewModel.showEmptyDoneHint, "walking away worked - there is no refusal to explain")
         XCTAssertFalse(viewModel.hasContent)
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: audioURL.path),

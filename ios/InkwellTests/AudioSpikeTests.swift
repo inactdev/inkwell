@@ -236,7 +236,8 @@ final class AudioSpikeTests: XCTestCase {
         let fireLog = RecognitionFailureFireLog()
         let qualifyingFailure = expectation(description: "a failure fired after real words were already on record")
         qualifyingFailure.assertForOverFulfill = false
-        capture.setRecognitionFailureHandler {
+        capture.setRecognitionFailureHandler { [weak capture] in
+            guard let capture else { return }
             let transcriptAtFire = capture.transcript
             fireLog.record(transcriptAtFire)
             if !transcriptAtFire.isEmpty {
@@ -275,10 +276,12 @@ final class AudioSpikeTests: XCTestCase {
         while capture.transcript.isEmpty && Date() < firstPartialDeadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         }
-        XCTAssertFalse(
-            capture.transcript.isEmpty,
-            "the first partial must arrive well inside silenceTimeout, or a segment-start watchdog fire could masquerade as the re-arm under test"
-        )
+        guard !capture.transcript.isEmpty else {
+            XCTFail("the first partial must arrive well inside silenceTimeout, or a segment-start watchdog fire could masquerade as the re-arm under test")
+            capture.stopCapture(tappedNode: player, bus: 0)
+            engine.stop()
+            return
+        }
         let wordsProducedAt = Date()
         XCTAssertTrue(
             fireLog.entries.allSatisfy { !$0.transcript.isEmpty },

@@ -13,6 +13,10 @@ final class CaptureViewModel {
     private(set) var committedText: String = ""
     private(set) var draftID = UUID()
     var showConfirmation = false
+    /// Brief hint shown when Done refuses to act because the failure
+    /// recording is the only thing left of the draft - a refused action
+    /// must be visible, never a button that appears to do nothing.
+    var showEmptyDoneHint = false
     var authorizationDenied = false
     var saveFailed = false
     /// Presents the failure alert. SwiftUI resets this to false the moment
@@ -194,6 +198,11 @@ final class CaptureViewModel {
             // the owner walking away from a draft they chose to leave blank.
             if recognitionFailed {
                 mode = .editing
+                showEmptyDoneHint = true
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(2.2))
+                    showEmptyDoneHint = false
+                }
                 return
             }
             discardDraft()

@@ -111,6 +111,10 @@ struct CaptureView: View {
             if viewModel.showConfirmation {
                 confirmationToast
             }
+
+            if viewModel.showEmptyDoneHint {
+                emptyDoneHint
+            }
         }
         .alert("Inkwell needs your voice", isPresented: $viewModel.authorizationDenied) {
             Button("OK", role: .cancel) {}
@@ -264,6 +268,24 @@ struct CaptureView: View {
         }
         .transition(.move(edge: .bottom).combined(with: .opacity))
         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.showConfirmation)
+    }
+
+    private var emptyDoneHint: some View {
+        VStack {
+            Spacer()
+            Text("Nothing to save - tap Discard to leave without keeping the recording.")
+                .font(.system(.subheadline, design: .serif))
+                .foregroundStyle(InkwellPalette.parchment)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(RoundedRectangle(cornerRadius: 22).fill(InkwellPalette.ink))
+                .padding(.horizontal, 24)
+                .padding(.bottom, 100)
+                .accessibilityIdentifier("emptyDoneHint")
+        }
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.showEmptyDoneHint)
     }
 }
 
