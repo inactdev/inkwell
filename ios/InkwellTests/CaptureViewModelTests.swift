@@ -199,6 +199,7 @@ final class CaptureViewModelTests: XCTestCase {
         try await waitUntil(timeout: 2) { !viewModel.isListening }
 
         XCTAssertTrue(viewModel.recognitionFailed, "a recognizer that produced nothing must not fail silently")
+        XCTAssertTrue(viewModel.showRecognitionFailureAlert, "the failure must present its alert, not just record itself")
         XCTAssertFalse(
             viewModel.recognitionFailedWithWordsHeard,
             "nothing was heard - the alert must not claim any words are here"
@@ -227,6 +228,7 @@ final class CaptureViewModelTests: XCTestCase {
         try await waitUntil(timeout: 2) { !viewModel.isListening }
 
         XCTAssertTrue(viewModel.recognitionFailed)
+        XCTAssertTrue(viewModel.showRecognitionFailureAlert)
         XCTAssertTrue(
             viewModel.recognitionFailedWithWordsHeard,
             "words survived - the alert must reassure, not read as though they were lost"
@@ -235,10 +237,15 @@ final class CaptureViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.mode, .editing)
     }
 
-    /// The non-negotiable behind the whole fix: a recording preserved on
-    /// disk may be the only record of the utterance, so Done with nothing
-    /// typed must not silently take it. Only the explicit Discard action may.
-    func testEmptyDoneKeepsThePreservedAudioRatherThanSilentlyDiscarding() async throws {
+    /// The non-negotiable behind the whole fix: after a recognition failure
+    /// with nothing heard, the recording preserved on disk may be the only
+    /// record of the utterance, so Done with nothing typed must not silently
+    /// take it. Only the explicit Discard action may. The gate is the
+    /// failure itself, not the file's existence - the real engine creates
+    /// the file at the start of every segment, so "a file exists" is true
+    /// for every voice-started draft and would turn every empty Done into a
+    /// no-op.
+    func testEmptyDoneAfterRecognitionFailureKeepsThePreservedAudio() async throws {
         let store = try makeStore()
         let engine = FakeCaptureEngine()
         let viewModel = CaptureViewModel(store: store, engine: engine)
@@ -246,12 +253,18 @@ final class CaptureViewModelTests: XCTestCase {
         viewModel.tapInkwell()
         try await waitUntil(timeout: 2) { viewModel.isListening }
 
-        // The segment's audio reached disk before recognition died.
+        // The segment's audio file reached disk at segment start, exactly as
+        // the real engine writes it, before recognition died.
         let audioURL = store.audioURL(for: viewModel.draftID)
-        try Data("not really audio".utf8).write(to: audioURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audioURL.path))
 
         engine.failRecognition()
         try await waitUntil(timeout: 2) { !viewModel.isListening }
+
+        // The owner must dismiss the modal alert before Done is even
+        // tappable - the durable failure fact has to outlive that dismissal,
+        // or this protection would be dead code in the real app.
+        viewModel.showRecognitionFailureAlert = false
 
         let draftID = viewModel.draftID
         viewModel.done()
@@ -270,23 +283,32 @@ final class CaptureViewModelTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: audioURL.path))
     }
 
-    /// With no recording on disk there is nothing to protect: an empty Done
-    /// still clears out and returns to idle exactly as before.
-    func testEmptyDoneWithNoAudioOnDiskStillResetsToIdle() async throws {
+    /// Without a recognition failure the recording is not the last record of
+    /// anything: leaving the editor empty and tapping Done is the owner
+    /// walking away, and it must still clear out to idle - taking the
+    /// segment's audio file with it - even though the real engine created
+    /// that file the moment the segment started.
+    func testEmptyDoneWithoutARecognitionFailureStillResetsToIdle() async throws {
         let store = try makeStore()
         let engine = FakeCaptureEngine()
         let viewModel = CaptureViewModel(store: store, engine: engine)
 
         viewModel.tapInkwell()
         try await waitUntil(timeout: 2) { viewModel.isListening }
+        let audioURL = store.audioURL(for: viewModel.draftID)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audioURL.path))
 
-        engine.failRecognition()
+        // Tap the well to edit, say nothing, type nothing, tap Done.
+        viewModel.tapInkwell()
         try await waitUntil(timeout: 2) { !viewModel.isListening }
-
         viewModel.done()
 
-        XCTAssertEqual(viewModel.mode, .idle, "nothing typed and nothing recorded - Done has nothing to keep open")
+        XCTAssertEqual(viewModel.mode, .idle, "an empty draft the owner walked away from must not stay open")
         XCTAssertFalse(viewModel.hasContent)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: audioURL.path),
+            "the abandoned draft's audio must not be orphaned on disk"
+        )
         XCTAssertEqual(store.inklings.count, 0)
     }
 
@@ -333,6 +355,10 @@ private final class FakeCaptureEngine: CaptureEngine, @unchecked Sendable {
     func requestAuthorization() async -> Bool { true }
 
     func startCapturing(to fileURL: URL) throws {
+        // The real engine creates the audio file at segment start, before a
+        // single frame arrives - the fake must leave the same footprint or
+        // tests would exercise on-disk states production can never produce.
+        FileManager.default.createFile(atPath: fileURL.path, contents: Data())
         transcript = ""
         isCapturing = true
     }

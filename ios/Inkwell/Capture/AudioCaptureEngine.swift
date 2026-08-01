@@ -47,7 +47,19 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
     /// quietly working, e.g. no audio is actually reaching it. Long enough
     /// that a normal pause to gather a thought doesn't trip it; short enough
     /// that the owner isn't left staring at "Listening…" indefinitely.
-    static let silenceTimeout: TimeInterval = 10
+    ///
+    /// `INKWELL_SILENCE_TIMEOUT_OVERRIDE` (same launch-environment seam as
+    /// `INKWELL_BACKEND_URL` in AppConfig) lets a UI test that needs to hold
+    /// `.listening` open - this headless simulator's segments never receive
+    /// audio, so the watchdog otherwise always ends them - widen the window
+    /// instead of racing the production value. Unset means 10, everywhere.
+    static let silenceTimeout: TimeInterval = {
+        if let raw = ProcessInfo.processInfo.environment["INKWELL_SILENCE_TIMEOUT_OVERRIDE"],
+           let seconds = TimeInterval(raw), seconds > 0 {
+            return seconds
+        }
+        return 10
+    }()
 
     private(set) var transcript: String = ""
     private(set) var isRecording = false

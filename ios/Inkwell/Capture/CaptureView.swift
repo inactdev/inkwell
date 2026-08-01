@@ -99,7 +99,7 @@ struct CaptureView: View {
             }
             .alert(
                 viewModel.recognitionFailedWithWordsHeard ? "Dictation stopped" : "Didn't catch that",
-                isPresented: $viewModel.recognitionFailed
+                isPresented: $viewModel.showRecognitionFailureAlert
             ) {
                 Button("OK", role: .cancel) {}
             } message: {

@@ -23,6 +23,14 @@ final class LongDictationLayoutUITests: XCTestCase {
 
     func testLongDictationStaysScrollableAndTheHeaderStaysPut() throws {
         let app = XCUIApplication()
+        // This test's whole point is holding `.listening` open while probing
+        // layout, but this headless simulator never delivers audio, so the
+        // engine's silence watchdog would end the segment mid-assertion.
+        // Widening the timeout through the app's launch-environment seam
+        // removes that wall clock from the test entirely - the failure path
+        // itself is covered by VoiceCaptureFailureUITests, which deliberately
+        // runs on the real default.
+        app.launchEnvironment["INKWELL_SILENCE_TIMEOUT_OVERRIDE"] = "60"
         app.launch()
 
         let inkwell = app.otherElements["inkwell"]
@@ -43,12 +51,6 @@ final class LongDictationLayoutUITests: XCTestCase {
         let resumeButton = app.buttons["Resume dictation"]
         XCTAssertTrue(resumeButton.waitForExistence(timeout: 3))
         resumeButton.tap()
-        // No permission dialog can appear here - both grants were already
-        // decided at the first tap - and this resumed segment never receives
-        // audio in this environment, so the engine's silence watchdog will
-        // end it after `silenceTimeout`. Every .listening-layout assertion
-        // below must finish inside that window, so nothing in between may
-        // burn time waiting on things that cannot happen.
 
         // Back in .listening with the long passage now rendered as the live
         // transcript - the exact case that had no height ceiling.
@@ -83,19 +85,8 @@ final class LongDictationLayoutUITests: XCTestCase {
         }
         XCTAssertTrue(inkwell.isHittable, "the well must scroll back into view, not be stranded off-screen by auto-scroll")
 
-        // The layout assertions are done, so stop racing the watchdog: no
-        // audio ever reaches this segment, so its failure alert is the one
-        // guaranteed way the segment ends. Wait it out explicitly - it must
-        // be the words-survived copy, since the whole ramble is committed.
-        let watchdogAlert = app.alerts["Dictation stopped"]
-        XCTAssertTrue(
-            watchdogAlert.waitForExistence(timeout: 15),
-            "the silent resumed segment must end in the words-survived failure alert"
-        )
-        watchdogAlert.buttons["OK"].tap()
-
         // Clean up rather than leave a long draft (or save it) behind - the
-        // failure lands in editing, where a Discard control is showing.
+        // footer's Discard is reachable directly from .listening.
         app.buttons["Discard"].tap()
     }
 

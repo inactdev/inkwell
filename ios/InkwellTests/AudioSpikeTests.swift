@@ -202,6 +202,13 @@ final class AudioSpikeTests: XCTestCase {
     /// here by offline-rendering the bundled speech clip through the tap,
     /// then the recognizer is starved (no more audio, no endAudio) and the
     /// failure must still surface within the silence window.
+    ///
+    /// Only a failure that fires *after* words were on record proves the
+    /// re-arm - a fire with an empty transcript is the segment-start
+    /// watchdog, which the old one-shot design already had, so it must not
+    /// satisfy this test. The first partial must also land well inside
+    /// `silenceTimeout`, or that start-anchored fire could get there first
+    /// and mask whether re-arming happened at all.
     func testRecognizerGoingDeadAfterPartialWordsStillReportsFailure() throws {
         let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
         try XCTSkipUnless(recognizer?.isAvailable == true, "Speech recognizer not available in this environment")
@@ -226,9 +233,16 @@ final class AudioSpikeTests: XCTestCase {
             .appendingPathExtension("caf")
         addTeardownBlock { try? FileManager.default.removeItem(at: outputURL) }
 
-        let failureExpectation = expectation(description: "a recognizer dead after partial words was reported as a failure")
-        failureExpectation.assertForOverFulfill = false
-        capture.setRecognitionFailureHandler { failureExpectation.fulfill() }
+        let fireLog = RecognitionFailureFireLog()
+        let qualifyingFailure = expectation(description: "a failure fired after real words were already on record")
+        qualifyingFailure.assertForOverFulfill = false
+        capture.setRecognitionFailureHandler {
+            let transcriptAtFire = capture.transcript
+            fireLog.record(transcriptAtFire)
+            if !transcriptAtFire.isEmpty {
+                qualifyingFailure.fulfill()
+            }
+        }
 
         try capture.beginCapture(tappingNode: player, bus: 0, to: outputURL)
         player.scheduleFile(sourceFile, at: nil)
@@ -257,16 +271,29 @@ final class AudioSpikeTests: XCTestCase {
             }
         }
 
-        let producedWords = XCTNSPredicateExpectation(
-            predicate: NSPredicate { _, _ in !capture.transcript.isEmpty },
-            object: nil
+        let firstPartialDeadline = Date().addingTimeInterval(5)
+        while capture.transcript.isEmpty && Date() < firstPartialDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertFalse(
+            capture.transcript.isEmpty,
+            "the first partial must arrive well inside silenceTimeout, or a segment-start watchdog fire could masquerade as the re-arm under test"
         )
-        wait(for: [producedWords], timeout: 10)
-        XCTAssertFalse(capture.transcript.isEmpty, "the clip must produce real partial words for this to prove anything")
+        let wordsProducedAt = Date()
+        XCTAssertTrue(
+            fireLog.entries.allSatisfy { !$0.transcript.isEmpty },
+            "no failure may fire before words were produced - that would be the start-anchored watchdog, not the re-arm"
+        )
 
         // From here the recognizer gets nothing more, ever - the mid-segment
         // death the re-arming watchdog exists to catch.
-        wait(for: [failureExpectation], timeout: AudioCaptureEngine.silenceTimeout + 10)
+        wait(for: [qualifyingFailure], timeout: AudioCaptureEngine.silenceTimeout + 10)
+
+        let qualifyingFires = fireLog.entries.filter { !$0.transcript.isEmpty }
+        XCTAssertTrue(
+            qualifyingFires.contains { $0.firedAt > wordsProducedAt },
+            "the failure must have fired after the words were on record - only that proves the deadline re-armed on progress"
+        )
 
         capture.stopCapture(tappedNode: player, bus: 0)
         engine.stop()
@@ -281,5 +308,26 @@ final class AudioSpikeTests: XCTestCase {
         }
         wait(for: [exp], timeout: 10)
         return granted
+    }
+}
+
+/// Latches, per `onRecognitionFailure` fire, when it fired and what the
+/// transcript held at that instant - the two facts that distinguish a
+/// re-armed post-words watchdog fire from the segment-start fire the old
+/// one-shot design already produced.
+private final class RecognitionFailureFireLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fires: [(firedAt: Date, transcript: String)] = []
+
+    func record(_ transcript: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        fires.append((firedAt: Date(), transcript: transcript))
+    }
+
+    var entries: [(firedAt: Date, transcript: String)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return fires
     }
 }

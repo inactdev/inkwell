@@ -15,7 +15,16 @@ final class CaptureViewModel {
     var showConfirmation = false
     var authorizationDenied = false
     var saveFailed = false
-    var recognitionFailed = false
+    /// Presents the failure alert. SwiftUI resets this to false the moment
+    /// the owner dismisses the alert, so it cannot double as the record of
+    /// the failure itself - that is `recognitionFailed`'s job.
+    var showRecognitionFailureAlert = false
+    /// The durable fact that this draft's latest capture segment failed,
+    /// outliving the alert's dismissal. While true, the audio preserved on
+    /// disk may be the only record of the utterance, so an empty Done must
+    /// not silently discard it. Cleared when a new segment starts or the
+    /// draft ends.
+    private(set) var recognitionFailed = false
     /// Decided here, not in the view: whether any words had made it into the
     /// draft by the time recognition failed, so the alert can reassure
     /// ("your words are here") instead of implying they were lost.
@@ -97,6 +106,7 @@ final class CaptureViewModel {
         beginEditing()
         recognitionFailedWithWordsHeard = !committedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         recognitionFailed = true
+        showRecognitionFailureAlert = true
     }
 
     /// Tapping the well: start listening from idle/editing, or - while
@@ -143,10 +153,19 @@ final class CaptureViewModel {
                 // transcript carries the full history forward; only the
                 // audio companion is scoped to the most recent segment. A
                 // fine tradeoff for the skeleton; worth revisiting if
-                // multi-segment capture becomes common.
+                // multi-segment capture becomes common. Known limitation,
+                // accepted for now: the silence watchdog re-arms on every
+                // transcript change, so it can also end a segment after an
+                // ordinary mid-dictation pause - resuming from that alert
+                // truncates the earlier segment's recording just like a
+                // manual edit-then-resume does (the words themselves survive
+                // in committedText). Full multi-segment audio preservation
+                // is queued as separate work (the offline-first capture
+                // rebuild), not part of this fix.
                 try engine.startCapturing(to: store.audioURL(for: draftID))
                 mode = .listening
                 isSegmentLive = true
+                recognitionFailed = false
             } catch {
                 authorizationDenied = true
             }
@@ -168,10 +187,12 @@ final class CaptureViewModel {
 
         let text = committedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
-            // A recording preserved on disk may be the only record of what
-            // was said. Done with nothing typed must not silently take it -
-            // only the explicit Discard action may delete it.
-            if FileManager.default.fileExists(atPath: store.audioURL(for: draftID).path) {
+            // After a recognition failure, the recording preserved on disk
+            // may be the only record of what was said. Done with nothing
+            // typed must not silently take it - only the explicit Discard
+            // action may delete it. Absent such a failure, an empty Done is
+            // the owner walking away from a draft they chose to leave blank.
+            if recognitionFailed {
                 mode = .editing
                 return
             }
@@ -233,5 +254,7 @@ final class CaptureViewModel {
         committedText = ""
         draftID = UUID()
         isSegmentLive = false
+        recognitionFailed = false
+        recognitionFailedWithWordsHeard = false
     }
 }
