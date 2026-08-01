@@ -74,7 +74,7 @@ registry to update - the worktree's own path *is* the registry key.
 ```
 ./dev.sh                regenerate the Xcode project, ensure + boot this worktree's simulator,
                           start the backend (foreground; Ctrl-C stops it and exits 130,
-                          a `kill` of the dev.sh PID exits 143), then build, install,
+                          a kill of the dev.sh PID exits 143), then build, install,
                           and launch the app on that simulator and bring Simulator.app to the
                           front - it ends with Inkwell on screen, not just the environment
                           prepared. Best-effort throughout: no Xcode/xcodegen and it continues
@@ -83,12 +83,12 @@ registry to update - the worktree's own path *is* the registry key.
                           one Simulator.app" below.
 ./dev.sh up -d           the same run, app on screen included, except the backend is left
                           running in the background and the command returns rather than
-                          holding the terminal (`--detach`/`--wait` behave the same way).
-                          `./dev.sh down` is then what stops it. Being the form scripts
+                          holding the terminal (--detach/--wait behave the same way).
+                          ./dev.sh down is then what stops it. Being the form scripts
                           drive, it exits non-zero when the backend never became
                           reachable - on every path, including the backend-only one
                           above, since that status is all a caller gets once the
-                          terminal comes back. A backend that *is* up but whose
+                          terminal comes back. A backend that is up but whose
                           build/install/launch failed still exits 0 - that half stays
                           best-effort, as above.
 ./dev.sh down            stop it, and delete this worktree's simulator + DerivedData
