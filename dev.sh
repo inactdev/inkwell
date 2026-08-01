@@ -103,18 +103,28 @@ inkwell_args_request_detach() {
   return 1
 }
 
-# Non-zero means specifically "the backend never answered, so nothing was
-# built, installed, or launched" - the one outcome a caller can't recover from.
-# A backend that *is* up but whose app build/install/launch failed stays a
-# success here, matching the documented best-effort contract for the iOS half.
+# Waits for the backend to actually answer, then - only when this run has a
+# simulator to put it on - builds, installs, and launches the app.
+#
+# Non-zero means one thing: the backend never answered. That check deliberately
+# does not depend on whether the iOS half was prepared, and the `ios_ready`
+# test lives in here rather than at the call sites so it cannot drift back into
+# gating it: "did the backend come up" is the question every caller asks, and a
+# backend-only run (no Xcode, no xcodegen, failed simulator prep) still has to
+# answer it. The iOS half stays best-effort in both directions - a
+# build/install/launch that fails against a live backend is still a success.
 inkwell_launch_when_backend_ready() {
-  local udid=$1
-  shift
+  local ios_ready=$1 udid=$2
+  shift 2
   if ! inkwell_wait_for_backend "$@"; then
-    echo "inkwell: backend not reachable - skipping app build, install, and launch" >&2
+    if [ "$ios_ready" -eq 1 ]; then
+      echo "inkwell: backend not reachable - skipping app build, install, and launch" >&2
+    fi
     return 1
   fi
-  inkwell_build_install_launch "$udid" || true
+  if [ "$ios_ready" -eq 1 ]; then
+    inkwell_build_install_launch "$udid" || true
+  fi
 }
 
 # Simulator.app shows every booted device in its own window inside one
@@ -295,10 +305,10 @@ case "$cmd" in
       # only place the "containers came up but the backend never answered"
       # outcome can reach a caller - without it, the scriptable form of the
       # command reports success for a run that never produced a usable backend.
+      # Runs on every path, iOS tooling present or not: handing the terminal
+      # back makes this status the whole report.
       rc=0
-      if [ "$ios_ready" -eq 1 ]; then
-        inkwell_launch_when_backend_ready "$udid" inkwell_compose_containers_alive || rc=$?
-      fi
+      inkwell_launch_when_backend_ready "$ios_ready" "$udid" inkwell_compose_containers_alive || rc=$?
       exit "$rc"
     fi
 
@@ -338,9 +348,7 @@ case "$cmd" in
     # here: compose is still running as a background child, and exiting now
     # would orphan it and drop the "Ctrl-C stops the backend" contract. The
     # `wait` below owns this path's exit status and reports compose's own.
-    if [ "$ios_ready" -eq 1 ]; then
-      inkwell_launch_when_backend_ready "$udid" inkwell_compose_pid_alive "$compose_pid" || true
-    fi
+    inkwell_launch_when_backend_ready "$ios_ready" "$udid" inkwell_compose_pid_alive "$compose_pid" || true
 
     wait "$compose_pid"
     ;;

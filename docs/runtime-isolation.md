@@ -102,9 +102,11 @@ registry to update - the worktree's own path *is* the registry key.
                           holding the terminal (`--detach`/`--wait` behave the same way).
                           `./dev.sh down` is then what stops it. Being the form scripts
                           drive, it exits non-zero when the backend never became
-                          reachable and the app was therefore never built, installed, or
-                          launched. A backend that *is* up but whose build/install/launch
-                          failed still exits 0 - that half stays best-effort, as above.
+                          reachable - on every path, including the backend-only one
+                          above, since that status is all a caller gets once the
+                          terminal comes back. A backend that *is* up but whose
+                          build/install/launch failed still exits 0 - that half stays
+                          best-effort, as above.
 ./dev.sh down            stop it, and delete this worktree's simulator + DerivedData
 ./dev.sh ps               show this worktree's backend container
 ./dev.sh logs             follow this worktree's backend logs
