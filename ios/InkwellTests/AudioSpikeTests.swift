@@ -327,7 +327,11 @@ final class AudioSpikeTests: XCTestCase {
             granted = await AudioCaptureEngine.requestAuthorization()
             exp.fulfill()
         }
-        wait(for: [exp], timeout: 10)
+        // The grants themselves are pre-seeded in this environment, but the
+        // very first authorization round-trip after a fresh simulator
+        // boot/install has been observed to take longer than 10s while the
+        // speech/TCC daemons spin up - seen once as a real CI-style flake.
+        wait(for: [exp], timeout: 30)
         return granted
     }
 }
