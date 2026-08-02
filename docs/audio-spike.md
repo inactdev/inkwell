@@ -74,6 +74,9 @@ different angles:
    gather a thought must not trip it) and
    `testRecognizerGoingDeadAfterPartialWordsStillReportsFailure` (it re-arms on every
    transcript change, so a recognizer that goes dead *after* producing words still surfaces).
+   Since the field-report follow-up below, both also pin the failure's *classification*: the
+   real-silence case must report `RecognitionFailureReason.noAudioDetected`, and a fire after
+   real audio was fed through the tap must report `.recognitionFailed`, never `noAudioDetected`.
 
 Run the whole suite:
 
