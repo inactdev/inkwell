@@ -174,11 +174,25 @@ final class AudioSpikeTests: XCTestCase {
         // The watchdog and a late recognizer error can both legitimately
         // report the same dead segment - either one proves the fix.
         failureExpectation.assertForOverFulfill = false
-        capture.setRecognitionFailureHandler { failureExpectation.fulfill() }
+        nonisolated(unsafe) var reportedReason: RecognitionFailureReason?
+        capture.setRecognitionFailureHandler { reason in
+            reportedReason = reason
+            failureExpectation.fulfill()
+        }
 
         try capture.startCapturing(to: outputURL)
         wait(for: [failureExpectation], timeout: AudioCaptureEngine.silenceTimeout + 5)
         XCTAssertTrue(capture.transcript.isEmpty, "this environment has no live mic input to produce real words from")
+        // Real, non-fake proof of the no-audio classification: this
+        // environment's real hardware inputNode reliably delivers zero
+        // signal (confirmed by direct RMS measurement while feeding it real
+        // host audio - every buffer read exactly 0.0), so a fix that
+        // distinguishes "no audio" from "recognizer failed" must classify
+        // this exact real-world case as noAudioDetected, not a generic failure.
+        XCTAssertEqual(
+            reportedReason, .noAudioDetected,
+            "zero real signal ever reached the tap this segment - this must be reported as no audio detected, not a generic recognition failure"
+        )
 
         capture.stopCapturing()
     }
@@ -236,10 +250,10 @@ final class AudioSpikeTests: XCTestCase {
         let fireLog = RecognitionFailureFireLog()
         let qualifyingFailure = expectation(description: "a failure fired after real words were already on record")
         qualifyingFailure.assertForOverFulfill = false
-        capture.setRecognitionFailureHandler { [weak capture] in
+        capture.setRecognitionFailureHandler { [weak capture] reason in
             guard let capture else { return }
             let transcriptAtFire = capture.transcript
-            fireLog.record(transcriptAtFire)
+            fireLog.record(transcript: transcriptAtFire, reason: reason)
             if !transcriptAtFire.isEmpty {
                 qualifyingFailure.fulfill()
             }
@@ -297,6 +311,10 @@ final class AudioSpikeTests: XCTestCase {
             qualifyingFires.contains { $0.firedAt > wordsProducedAt },
             "the failure must have fired after the words were on record - only that proves the deadline re-armed on progress"
         )
+        XCTAssertTrue(
+            qualifyingFires.allSatisfy { $0.reason == .recognitionFailed },
+            "real audio was fed through the tap this segment - a fire with words already on record must never be misclassified as no audio detected"
+        )
 
         capture.stopCapture(tappedNode: player, bus: 0)
         engine.stop()
@@ -320,15 +338,15 @@ final class AudioSpikeTests: XCTestCase {
 /// one-shot design already produced.
 private final class RecognitionFailureFireLog: @unchecked Sendable {
     private let lock = NSLock()
-    private var fires: [(firedAt: Date, transcript: String)] = []
+    private var fires: [(firedAt: Date, transcript: String, reason: RecognitionFailureReason)] = []
 
-    func record(_ transcript: String) {
+    func record(transcript: String, reason: RecognitionFailureReason) {
         lock.lock()
         defer { lock.unlock() }
-        fires.append((firedAt: Date(), transcript: transcript))
+        fires.append((firedAt: Date(), transcript: transcript, reason: reason))
     }
 
-    var entries: [(firedAt: Date, transcript: String)] {
+    var entries: [(firedAt: Date, transcript: String, reason: RecognitionFailureReason)] {
         lock.lock()
         defer { lock.unlock() }
         return fires

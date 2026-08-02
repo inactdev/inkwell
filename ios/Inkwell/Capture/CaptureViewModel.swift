@@ -33,6 +33,12 @@ final class CaptureViewModel {
     /// draft by the time recognition failed, so the alert can reassure
     /// ("your words are here") instead of implying they were lost.
     private(set) var recognitionFailedWithWordsHeard = false
+    /// True when the failure was specifically that no audio ever reached the
+    /// microphone this segment - a more specific, more actionable fact than
+    /// a generic recognition failure, so the alert can say so directly
+    /// rather than leaving the owner to guess whether it's a mic/simulator
+    /// setup problem or the recognizer itself.
+    private(set) var noAudioDetected = false
 
     private let engine: any CaptureEngine
     private let store: InklingStore
@@ -71,8 +77,8 @@ final class CaptureViewModel {
         engine.setInterruptionHandler { [weak self] in
             Task { @MainActor in self?.captureWasInterrupted() }
         }
-        engine.setRecognitionFailureHandler { [weak self] in
-            Task { @MainActor in self?.captureRecognitionFailed() }
+        engine.setRecognitionFailureHandler { [weak self] reason in
+            Task { @MainActor in self?.captureRecognitionFailed(reason: reason) }
         }
     }
 
@@ -105,11 +111,12 @@ final class CaptureViewModel {
     /// alive until the owner decides what to do with it - typing over a
     /// failed recognition is the one path already proven to work, and a
     /// silent reset here would just be this same bug moved later.
-    private func captureRecognitionFailed() {
+    private func captureRecognitionFailed(reason: RecognitionFailureReason) {
         guard mode == .listening else { return }
         beginEditing()
         recognitionFailedWithWordsHeard = !committedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         recognitionFailed = true
+        noAudioDetected = reason == .noAudioDetected
         showRecognitionFailureAlert = true
     }
 
@@ -170,6 +177,7 @@ final class CaptureViewModel {
                 mode = .listening
                 isSegmentLive = true
                 recognitionFailed = false
+                noAudioDetected = false
             } catch {
                 authorizationDenied = true
             }
@@ -265,6 +273,7 @@ final class CaptureViewModel {
         isSegmentLive = false
         recognitionFailed = false
         recognitionFailedWithWordsHeard = false
+        noAudioDetected = false
         showEmptyDoneHint = false
     }
 }

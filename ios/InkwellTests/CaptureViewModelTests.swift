@@ -204,10 +204,46 @@ final class CaptureViewModelTests: XCTestCase {
             viewModel.recognitionFailedWithWordsHeard,
             "nothing was heard - the alert must not claim any words are here"
         )
+        XCTAssertFalse(
+            viewModel.noAudioDetected,
+            "a generic recognition failure is not the same fact as no audio ever reaching the mic"
+        )
         XCTAssertEqual(viewModel.mode, .editing, "the draft must stay open to type into, not reset to idle")
         XCTAssertEqual(store.inklings.count, 0, "nothing was heard, so nothing should have been saved yet")
 
         // The proven-working typed path recovers the idea.
+        viewModel.updateCommittedText("Check the mooring line after the storm")
+        viewModel.done()
+        XCTAssertEqual(store.inklings.count, 1)
+    }
+
+    /// The field report that motivated this distinction: a recognition
+    /// failure caused by no audio ever reaching the microphone (a
+    /// simulator's host mic access or audio input routing, not the
+    /// recognizer) must say so specifically, not read as an identical
+    /// generic "didn't catch that" - the owner needs a different next step
+    /// (check mic access) than for an ordinary recognition failure (just
+    /// try again).
+    func testRecognitionFailureWithNoAudioDetectedIsDistinguishedFromAGenericFailure() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+
+        engine.failRecognition(reason: .noAudioDetected)
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+
+        XCTAssertTrue(viewModel.recognitionFailed)
+        XCTAssertTrue(viewModel.showRecognitionFailureAlert)
+        XCTAssertTrue(
+            viewModel.noAudioDetected,
+            "the specific fact - no audio ever arrived - must reach the view model, not just a generic failure"
+        )
+        XCTAssertEqual(viewModel.mode, .editing, "the draft must stay open to type into, not reset to idle")
+
+        // A fresh segment must not carry the stale fact forward.
         viewModel.updateCommittedText("Check the mooring line after the storm")
         viewModel.done()
         XCTAssertEqual(store.inklings.count, 1)
@@ -387,7 +423,7 @@ private final class FakeCaptureEngine: CaptureEngine, @unchecked Sendable {
     var inputLevel: Float = 0
     private(set) var isCapturing = false
     private var onInterruption: (@Sendable () -> Void)?
-    private var onRecognitionFailure: (@Sendable () -> Void)?
+    private var onRecognitionFailure: (@Sendable (RecognitionFailureReason) -> Void)?
 
     func requestAuthorization() async -> Bool { true }
 
@@ -408,7 +444,7 @@ private final class FakeCaptureEngine: CaptureEngine, @unchecked Sendable {
         onInterruption = handler
     }
 
-    func setRecognitionFailureHandler(_ handler: @escaping @Sendable () -> Void) {
+    func setRecognitionFailureHandler(_ handler: @escaping @Sendable (RecognitionFailureReason) -> Void) {
         onRecognitionFailure = handler
     }
 
@@ -427,8 +463,8 @@ private final class FakeCaptureEngine: CaptureEngine, @unchecked Sendable {
 
     /// What the real engine does on a recognizer error or a silence timeout:
     /// stop for real, then tell the owner nothing came through.
-    func failRecognition() {
+    func failRecognition(reason: RecognitionFailureReason = .recognitionFailed) {
         stopCapturing()
-        onRecognitionFailure?()
+        onRecognitionFailure?(reason)
     }
 }

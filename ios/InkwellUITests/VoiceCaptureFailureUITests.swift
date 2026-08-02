@@ -32,9 +32,13 @@ final class VoiceCaptureFailureUITests: XCTestCase {
         attachScreenshot(app, name: "01-listening")
 
         // The one thing this environment's silence guarantees: no words will
-        // ever arrive, so the failure alert is the only thing that can end this wait.
-        let alert = app.alerts["Didn't catch that"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 15), "a dead recognizer must surface, not hang silently")
+        // ever arrive, so the failure alert is the only thing that can end
+        // this wait. This environment's real inputNode reliably delivers
+        // zero signal (confirmed by direct RMS measurement), so the specific
+        // "no audio detected" alert - not the generic "didn't catch that" -
+        // is the correct outcome here.
+        let alert = app.alerts["No sound reached the microphone"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 15), "a dead microphone input must surface specifically, not hang silently or read as a generic failure")
         attachScreenshot(app, name: "02-failure-alert")
         alert.buttons["OK"].tap()
 

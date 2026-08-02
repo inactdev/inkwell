@@ -99,3 +99,35 @@ Not proven here (needs a human with the simulator focused and a working mic, i.e
 manual QA): that live human speech through the Simulator's mic passthrough produces good
 transcription quality in practice. That's a UX/quality question for later manual testing,
 not a mechanism question - the mechanism this spike was asked to verify is sound.
+
+## Field report follow-up: silence at the tap is not the same bug as a failed recognizer
+
+A captain field report after the failure-visibility fix shipped (voice capture still produced
+no transcript on his own machine, in a normal windowed Simulator, not this headless one) raised
+the same question this doc already flags above: was the mechanism ever proven against something
+other than silence? It was - see `testSingleTapFeedsBothRecognitionAndFileWriteSimultaneously`
+above - so the recognizer itself is not the suspect. Direct measurement settled the rest: a
+temporary RMS tap on `AudioCaptureEngine`'s real `inputNode` tap, run while repeatedly playing
+synthesized speech through this Mac's host speakers during the listening window, showed the tap
+firing correctly (real, well-formed buffers, ~100ms apart) but every single sample reading
+exactly `0.0` - with or without host audio playing. That is real, live confirmation that no host
+audio reaches this booted simulator's virtual microphone at all, distinct from "the recognizer
+received audio and failed" - a distinction the product previously had no way to make, and no way
+to tell the owner about.
+
+`AudioCaptureEngine.beginCapture` now tracks whether any buffer in a segment exceeded a small
+RMS floor (`audioDetectionThreshold`). When the silence watchdog (not a thrown startup error or
+a genuine mid-segment recognizer error) ends a segment where that never happened,
+`RecognitionFailureReason.noAudioDetected` reaches `CaptureViewModel` and the alert says so
+specifically ("No sound reached the microphone") instead of the generic "Didn't catch that" -
+because the fix for the two failures is different: check mic access/audio input routing, versus
+just try again. `VoiceCaptureFailureUITests` now expects this specific alert, since this
+environment's real `inputNode` reliably produces exactly this case.
+
+This does not, on its own, tell you *why* host audio doesn't reach the simulator on a given
+machine - the two most likely causes are the macOS host's own microphone permission for
+Simulator.app/Xcode (System Settings > Privacy & Security > Microphone - separate from the
+in-app iOS grant handled via TCC.db above) and the Simulator's own per-boot `I/O > Audio Input`
+device selection, neither of which is inspectable or settable headlessly (the host TCC database
+is SIP-protected without Full Disk Access, and the Simulator's audio input device is a
+GUI-only per-window setting). Testing on a real phone sidesteps both entirely.

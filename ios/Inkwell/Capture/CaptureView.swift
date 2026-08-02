@@ -98,14 +98,12 @@ struct CaptureView: View {
                 Text("Your words are still here. Tap Done again in a moment.")
             }
             .alert(
-                viewModel.recognitionFailedWithWordsHeard ? "Dictation stopped" : "Didn't catch that",
+                recognitionFailureAlertTitle,
                 isPresented: $viewModel.showRecognitionFailureAlert
             ) {
                 Button("OK", role: .cancel) {}
             } message: {
-                Text(viewModel.recognitionFailedWithWordsHeard
-                    ? "Your words are here - type the rest, or try the well again."
-                    : "Speech recognition didn't come through. Type it in instead, or try the well again.")
+                Text(recognitionFailureAlertMessage)
             }
 
             if viewModel.showConfirmation {
@@ -214,6 +212,23 @@ struct CaptureView: View {
 
     private var committedTextBinding: Binding<String> {
         Binding(get: { viewModel.committedText }, set: { viewModel.updateCommittedText($0) })
+    }
+
+    /// No audio at all is a more specific, more actionable fact than a
+    /// generic recognition failure - the owner can check mic access or the
+    /// simulator's audio input instead of just trying again and hoping.
+    private var recognitionFailureAlertTitle: String {
+        if viewModel.noAudioDetected { return "No sound reached the microphone" }
+        return viewModel.recognitionFailedWithWordsHeard ? "Dictation stopped" : "Didn't catch that"
+    }
+
+    private var recognitionFailureAlertMessage: String {
+        if viewModel.noAudioDetected {
+            return "Check mic access for this simulator/device, then try again."
+        }
+        return viewModel.recognitionFailedWithWordsHeard
+            ? "Your words are here - type the rest, or try the well again."
+            : "Speech recognition didn't come through. Type it in instead, or try the well again."
     }
 
     /// The keyboard accessory carries its own Discard and Done while the

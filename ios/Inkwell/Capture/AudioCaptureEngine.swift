@@ -20,7 +20,23 @@ protocol CaptureEngine: AnyObject, Sendable {
     /// word or went dead after some. Without this, a dead recognizer and a
     /// quietly-working one are indistinguishable from the UI: both just
     /// show "Listening…" forever.
-    func setRecognitionFailureHandler(_ handler: @escaping @Sendable () -> Void)
+    func setRecognitionFailureHandler(_ handler: @escaping @Sendable (RecognitionFailureReason) -> Void)
+}
+
+/// Distinguishes *why* a segment produced nothing, so the alert can say
+/// something more useful than "didn't catch that" when the real cause is
+/// that no audio ever reached the microphone at all - e.g. a simulator
+/// whose host mic access or audio input routing isn't set up, confirmed by
+/// direct RMS measurement to be indistinguishable, from the tap's own
+/// perspective, from a dead recognizer unless the level is tracked.
+enum RecognitionFailureReason: Sendable, Equatable {
+    /// The silence watchdog fired and every buffer this segment measured at
+    /// or below the noise floor - nothing, not even a mumble, ever arrived.
+    case noAudioDetected
+    /// The recognizer settled with an error, or the watchdog fired after
+    /// audio was actually observed this segment - a real recognition
+    /// failure, not an absent input.
+    case recognitionFailed
 }
 
 /// Feeds one microphone tap to two independent consumers at once:
@@ -66,6 +82,14 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
     /// 0...1, driven by the same tap, for the inkwell's reaction to real audio.
     private(set) var inputLevel: Float = 0
 
+    /// Below this, a buffer's level reads as noise-floor silence rather than
+    /// real input - proven by direct measurement (RMS logged while feeding
+    /// this exact tap real audio from the host, both spoken and via a
+    /// synthesized clip played through system output) that genuine silence
+    /// here reads as exactly 0.0 with no variance, so any small margin above
+    /// zero already separates "nothing arrived" from "something did."
+    @ObservationIgnored private static let audioDetectionThreshold: Float = 0.01
+
     @ObservationIgnored private let audioEngine: AVAudioEngine
     @ObservationIgnored private let speechRecognizer: SFSpeechRecognizer?
     @ObservationIgnored private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
@@ -73,9 +97,13 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
     @ObservationIgnored private var audioFile: AVAudioFile?
     @ObservationIgnored private var onFinalTranscript: ((String) -> Void)?
     @ObservationIgnored private var onInterruption: (@Sendable () -> Void)?
-    @ObservationIgnored private var onRecognitionFailure: (@Sendable () -> Void)?
+    @ObservationIgnored private var onRecognitionFailure: (@Sendable (RecognitionFailureReason) -> Void)?
     @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
     @ObservationIgnored private var silenceWatchdog: Task<Void, Never>?
+    /// Whether any buffer this segment has measured above the noise floor -
+    /// the fact that distinguishes "no audio ever reached the mic" from an
+    /// ordinary recognition failure when the watchdog fires.
+    @ObservationIgnored private var observedAudioThisSegment = false
     /// Bumped per capture segment so a callback from a segment that has
     /// already been stopped can't publish over the current one's state.
     @ObservationIgnored private var generation = 0
@@ -149,6 +177,7 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
         }
         recognitionRequest = request
         transcript = ""
+        observedAudioThisSegment = false
         generation &+= 1
         let generation = self.generation
 
@@ -167,6 +196,9 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
             Task { @MainActor in
                 guard self.isRecording, self.generation == generation else { return }
                 self.inputLevel = level
+                if level > Self.audioDetectionThreshold {
+                    self.observedAudioThisSegment = true
+                }
             }
         }
 
@@ -195,7 +227,7 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
                 // already flips isRecording off before cancelling the task,
                 // so a cancellation's own completion can't be mistaken for one.
                 if error != nil, self.isRecording {
-                    self.onRecognitionFailure?()
+                    self.onRecognitionFailure?(.recognitionFailed)
                 }
             }
         }
@@ -216,7 +248,7 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
             try? await Task.sleep(for: .seconds(Self.silenceTimeout))
             guard !Task.isCancelled else { return }
             guard let self, self.isRecording, self.generation == generation else { return }
-            self.onRecognitionFailure?()
+            self.onRecognitionFailure?(self.observedAudioThisSegment ? .recognitionFailed : .noAudioDetected)
         }
     }
 
@@ -229,7 +261,7 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
         onInterruption = handler
     }
 
-    func setRecognitionFailureHandler(_ handler: @escaping @Sendable () -> Void) {
+    func setRecognitionFailureHandler(_ handler: @escaping @Sendable (RecognitionFailureReason) -> Void) {
         onRecognitionFailure = handler
     }
 
