@@ -27,8 +27,9 @@ Source: `ios/Inkwell/Capture/AudioCaptureEngine.swift`.
 
 ## How it was verified
 
-This agent ran headless, with no human present to speak into a simulator microphone. Two
-tests cover what a human tap-and-speak session would have proven, from different angles:
+This agent ran headless, with no human present to speak into a simulator microphone. The
+`AudioSpikeTests` suite covers what a human tap-and-speak session would have proven, from
+different angles:
 
 1. **`testSingleTapFeedsBothRecognitionAndFileWriteSimultaneously`** (the real proof).
    A short phrase ("The submarine bay needs a stronger hull before the next dive.") was
@@ -68,9 +69,13 @@ tests cover what a human tap-and-speak session would have proven, from different
    used to be silent in the product sense too: nothing told `CaptureViewModel` or the owner
    that the recognizer would never produce a word. This test asserts
    `AudioCaptureEngine.setRecognitionFailureHandler` fires within `silenceTimeout` against the
-   real input node - the fix, not just the mechanism.
+   real input node - the fix, not just the mechanism. Two companion cases pin down the
+   watchdog itself: `testSilenceTimeoutIsWideEnoughForAThinkingPause` (a normal pause to
+   gather a thought must not trip it) and
+   `testRecognizerGoingDeadAfterPartialWordsStillReportsFailure` (it re-arms on every
+   transcript change, so a recognizer that goes dead *after* producing words still surfaces).
 
-Run all three:
+Run the whole suite:
 
 ```
 ./dev.sh ios test -only-testing:InkwellTests/AudioSpikeTests
@@ -79,8 +84,9 @@ Run all three:
 That runs against a simulator cloned for this worktree with both grants above already applied, so
 the TCC step is no longer a manual one - see `docs/runtime-isolation.md`.
 
-All three pass in well under `AudioCaptureEngine.silenceTimeout` plus a few seconds, no flakes
-across repeated runs.
+All of them pass with no flakes across repeated runs; the watchdog cases each wait on
+`AudioCaptureEngine.silenceTimeout`, so the suite takes on the order of that timeout rather
+than the few seconds the original two tests needed.
 
 ## What this does and doesn't prove
 

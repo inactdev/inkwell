@@ -78,9 +78,10 @@ than one worktree is running at once, or first pick the device `./dev.sh ios sim
 device picker.
 
 Test suites: `InkwellTests` (the audio spike proof, plus the capture state-machine regressions -
-duplicate inklings, a failed save, interrupted segments) and `InkwellUITests` (the capture flow,
-the offline-then-sync scenario, and a long dictation staying scrollable on screen, driven through
-the real UI). `./dev.sh ios test` builds and runs them against a simulator device cloned just for
+duplicate inklings, a failed save, interrupted segments, a recognizer that errors out or goes
+silent mid-segment) and `InkwellUITests` (the capture flow, voice-capture failure surfaced and
+recovered by typing, the offline-then-sync scenario, and a long dictation staying scrollable on
+screen, driven through the real UI). `./dev.sh ios test` builds and runs them against a simulator device cloned just for
 this worktree, so two worktrees testing at once don't share a device, DerivedData, or app install
 (see `docs/runtime-isolation.md`). For everything except the offline-sync test that's equivalent to
 Xcode's Test navigator or `xcodebuild test -only-testing:<TargetName>/<ClassName>`, minus the
