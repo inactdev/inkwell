@@ -253,6 +253,12 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
     }
 
     /// Test-only teardown for a tap installed on an arbitrary node (e.g. a player node).
+    /// Unlike `stopCapturing()`, this deliberately keeps `recognitionRequest`
+    /// and `recognitionTask` alive: offline rendering feeds audio faster than
+    /// recognition processes it, so at this point the request still holds
+    /// queued, unprocessed audio - releasing it here drops that backlog and
+    /// truncates the final transcript a caller waits for after this returns.
+    /// The references are released with the engine itself at test teardown.
     func stopCapture(tappedNode node: AVAudioNode, bus: Int) {
         silenceWatchdog?.cancel()
         silenceWatchdog = nil

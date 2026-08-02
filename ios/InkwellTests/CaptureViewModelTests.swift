@@ -284,7 +284,39 @@ final class CaptureViewModelTests: XCTestCase {
         // Discarding stays the owner's own explicit choice - and still works.
         viewModel.discard()
         XCTAssertEqual(viewModel.mode, .idle)
+        XCTAssertFalse(
+            viewModel.showEmptyDoneHint,
+            "the hint must not keep pointing at a Discard that already happened"
+        )
         XCTAssertFalse(FileManager.default.fileExists(atPath: audioURL.path))
+    }
+
+    /// The hint belongs to the draft it refused to save. Recovering that
+    /// draft by typing and saving it inside the hint's display window must
+    /// clear the hint immediately, not leave it rendering underneath the
+    /// save confirmation toast.
+    func testEmptyDoneHintClearsWhenTheDraftIsRecoveredAndSaved() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+        engine.failRecognition()
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+
+        viewModel.done()
+        XCTAssertTrue(viewModel.showEmptyDoneHint)
+
+        viewModel.updateCommittedText("Check the mooring line after the storm")
+        viewModel.done()
+
+        XCTAssertEqual(store.inklings.count, 1)
+        XCTAssertTrue(viewModel.showConfirmation)
+        XCTAssertFalse(
+            viewModel.showEmptyDoneHint,
+            "a stale refusal must not linger under the save confirmation"
+        )
     }
 
     /// Without a recognition failure the recording is not the last record of

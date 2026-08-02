@@ -265,5 +265,6 @@ final class CaptureViewModel {
         isSegmentLive = false
         recognitionFailed = false
         recognitionFailedWithWordsHeard = false
+        showEmptyDoneHint = false
     }
 }
