@@ -12,16 +12,19 @@ what `AudioCaptureEngine.beginCapture(tappingNode:bus:to:)` in the app does.
 node.installTap(onBus: bus, bufferSize: 1024, format: format) { [weak self] buffer, _ in
     request.append(buffer)                                       // consumer 1: live words
     try? file.write(from: buffer)                                // consumer 2: the immutable utterance
-    guard let self, let level = Self.level(of: buffer) else { return }
-    Task { @MainActor in self.inputLevel = level }               // consumer 3: inkwell audio reactivity
+    guard let self, let rms = Self.rms(of: buffer) else { return }
+    Task { @MainActor in                                         // consumer 3: inkwell audio reactivity
+        self.inputLevel = min(1, rms * Self.visualLevelGain)
+    }
 }
 ```
 
 One tap callback, three readers of the same `AVAudioPCMBuffer`. No format conversion, no
 copying required - `SFSpeechAudioBufferRecognitionRequest.append` and `AVAudioFile.write`
 both accept the buffer as-is. `request` and `file` are captured locals rather than properties
-read back off `self`, and the level is computed with pure buffer math and published on the main
-actor, so this block never touches observed state from the audio render thread.
+read back off `self`, and the raw RMS is computed with pure buffer math while the scaled level
+is published on the main actor, so this block never touches observed state from the audio render
+thread.
 
 Source: `ios/Inkwell/Capture/AudioCaptureEngine.swift`.
 

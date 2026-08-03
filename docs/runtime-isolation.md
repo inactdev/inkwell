@@ -161,12 +161,17 @@ machine-wide template simulator (`InkwellSimTemplate`, created once) with both t
 (via `simctl privacy`) and the speech-recognition grant (via the `TCC.db` edit) already applied, and
 every worktree gets its own simulator via `xcrun simctl clone` of that template.
 
-`simctl clone` copies the entire device data volume, including `TCC.db` - confirmed by creating a
-template, granting both permissions, cloning it, and inspecting the clone's `TCC.db` directly - so
-every per-worktree clone starts already granted, with no manual step and no risk of one lane's
-`simctl uninstall` resetting another lane's grants (per AGENTS.md's note that grants reset on
-uninstall even though the identity is nominally per-bundle-id): each worktree's simulator, and
-therefore its TCC state, is entirely its own device.
+`simctl clone` copies the entire device data volume, including `TCC.db` - but the copied grant
+rows do NOT survive the clone's first boot: tccd prunes access rows for clients not installed on
+the device, and a fresh clone boots before the app is installed (see AGENTS.md's sharp-edge note
+for the full diagnosis). So `inkwell_boot_sim` in `scripts/inkwell-env.sh` re-seeds both grants
+right after boot (and kicks tccd so it re-reads the db); rows added post-boot stick for the
+device's lifetime, since each worktree device only ever boots once. The result from the
+worktree's point of view is the same: every per-worktree simulator ends up granted with no
+manual step, and no risk of one lane's `simctl uninstall` resetting another lane's grants (per
+AGENTS.md's note that grants reset on uninstall even though the identity is nominally
+per-bundle-id): each worktree's simulator, and therefore its TCC state, is entirely its own
+device.
 
 ### ...and it deletes itself again
 
