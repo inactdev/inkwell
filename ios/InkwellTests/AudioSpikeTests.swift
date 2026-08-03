@@ -208,6 +208,42 @@ final class AudioSpikeTests: XCTestCase {
         )
     }
 
+    /// A review finding caught the threshold being documented as a raw RMS
+    /// floor while actually compared against the 0...1 value scaled for the
+    /// inkwell's visual reaction (`rms * 8`, clamped to 1) - an effective
+    /// floor 8x lower than its own doc comment claimed. Now that
+    /// `audioDetectionThreshold` is compared directly against `rms(of:)`'s
+    /// raw output, this pins both ends of that boundary with buffers of
+    /// exactly known RMS (a constant-amplitude signal's RMS is that same
+    /// amplitude), rather than trusting the doc comment's arithmetic again.
+    func testAudioDetectionThresholdIsRawRMSNotTheScaledVisualLevel() throws {
+        let threshold = AudioCaptureEngine.audioDetectionThreshold
+
+        let silence = try makeConstantAmplitudeBuffer(amplitude: 0, frameCount: 1024)
+        let silenceRMS = try XCTUnwrap(AudioCaptureEngine.rms(of: silence))
+        XCTAssertEqual(silenceRMS, 0, "exact silence must read as exactly 0 raw RMS")
+        XCTAssertFalse(silenceRMS > threshold, "silence itself must never cross the detection threshold")
+
+        let justAbove = try makeConstantAmplitudeBuffer(amplitude: threshold * 1.5, frameCount: 1024)
+        let aboveRMS = try XCTUnwrap(AudioCaptureEngine.rms(of: justAbove))
+        XCTAssertGreaterThan(aboveRMS, threshold, "a buffer with real signal above the floor must classify as audio detected")
+
+        let justBelow = try makeConstantAmplitudeBuffer(amplitude: threshold * 0.5, frameCount: 1024)
+        let belowRMS = try XCTUnwrap(AudioCaptureEngine.rms(of: justBelow))
+        XCTAssertLessThan(belowRMS, threshold, "a buffer below the floor must stay classified as noise, not audio")
+    }
+
+    private func makeConstantAmplitudeBuffer(amplitude: Float, frameCount: AVAudioFrameCount) throws -> AVAudioPCMBuffer {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount))
+        buffer.frameLength = frameCount
+        let samples = try XCTUnwrap(buffer.floatChannelData)[0]
+        for i in 0..<Int(frameCount) {
+            samples[i] = amplitude
+        }
+        return buffer
+    }
+
     /// The watchdog must re-arm on every transcript change, not only cover
     /// a segment that never produced anything: a recognizer that emits
     /// words and then goes dead mid-segment - no further partials, no

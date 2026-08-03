@@ -119,13 +119,16 @@ received audio and failed" - a distinction the product previously had no way to 
 to tell the owner about.
 
 `AudioCaptureEngine.beginCapture` now tracks whether any buffer in a segment exceeded a small
-RMS floor (`audioDetectionThreshold`). When the silence watchdog (not a thrown startup error or
-a genuine mid-segment recognizer error) ends a segment where that never happened,
-`RecognitionFailureReason.noAudioDetected` reaches `CaptureViewModel` and the alert says so
-specifically ("No sound reached the microphone") instead of the generic "Didn't catch that" -
-because the fix for the two failures is different: check mic access/audio input routing, versus
-just try again. `VoiceCaptureFailureUITests` now expects this specific alert, since this
-environment's real `inputNode` reliably produces exactly this case.
+raw RMS floor (`audioDetectionThreshold`) - deliberately compared against `rms(of:)`'s raw
+output, not the 0...1 value `inputLevel` scales it into for the inkwell's visual reaction
+(`visualLevelGain`), so the threshold's effective floor is exactly what its own value says
+rather than a function of an unrelated UI scaling factor. When the silence watchdog (not a
+thrown startup error or a genuine mid-segment recognizer error) ends a segment where that never
+happened, `RecognitionFailureReason.noAudioDetected` reaches `CaptureViewModel` and the alert
+says so specifically ("No sound reached the microphone") instead of the generic "Didn't catch
+that" - because the fix for the two failures is different: check mic access/audio input
+routing, versus just try again. `VoiceCaptureFailureUITests` now expects this specific alert,
+since this environment's real `inputNode` reliably produces exactly this case.
 
 This does not, on its own, tell you *why* host audio doesn't reach the simulator on a given
 machine - the two most likely causes are the macOS host's own microphone permission for

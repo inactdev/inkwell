@@ -82,13 +82,21 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
     /// 0...1, driven by the same tap, for the inkwell's reaction to real audio.
     private(set) var inputLevel: Float = 0
 
-    /// Below this, a buffer's level reads as noise-floor silence rather than
-    /// real input - proven by direct measurement (RMS logged while feeding
-    /// this exact tap real audio from the host, both spoken and via a
+    /// Raw RMS below this reads as noise-floor silence rather than real
+    /// input - proven by direct measurement (RMS logged while feeding this
+    /// exact tap real audio from the host, both spoken and via a
     /// synthesized clip played through system output) that genuine silence
-    /// here reads as exactly 0.0 with no variance, so any small margin above
-    /// zero already separates "nothing arrived" from "something did."
-    @ObservationIgnored private static let audioDetectionThreshold: Float = 0.01
+    /// here reads as exactly 0.0 RMS with no variance, so any small margin
+    /// above zero already separates "nothing arrived" from "something did."
+    /// Deliberately raw RMS, not the 0...1 value `inputLevel` displays -
+    /// comparing against a UI-scaled number would make this threshold's
+    /// effective floor a function of that scaling factor instead of what it
+    /// says on its face.
+    @ObservationIgnored static let audioDetectionThreshold: Float = 0.00125
+    /// Multiplies raw RMS into the 0...1 range `inputLevel` uses for the
+    /// inkwell's visual reaction to real audio - a UI scaling choice,
+    /// unrelated to `audioDetectionThreshold`.
+    @ObservationIgnored private static let visualLevelGain: Float = 8
 
     @ObservationIgnored private let audioEngine: AVAudioEngine
     @ObservationIgnored private let speechRecognizer: SFSpeechRecognizer?
@@ -192,11 +200,11 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
             // render thread never touches observed state.
             request.append(buffer)
             try? file.write(from: buffer)
-            guard let self, let level = Self.level(of: buffer) else { return }
+            guard let self, let rms = Self.rms(of: buffer) else { return }
             Task { @MainActor in
                 guard self.isRecording, self.generation == generation else { return }
-                self.inputLevel = level
-                if level > Self.audioDetectionThreshold {
+                self.inputLevel = min(1, rms * Self.visualLevelGain)
+                if rms > Self.audioDetectionThreshold {
                     self.observedAudioThisSegment = true
                 }
             }
@@ -311,7 +319,10 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
 
     /// Pure buffer math, safe to run on the render thread. Nil means this
     /// buffer carries nothing to measure, so the level should be left as-is.
-    private static func level(of buffer: AVAudioPCMBuffer) -> Float? {
+    /// Returns raw RMS - callers scale it for visualization (`visualLevelGain`)
+    /// or compare it directly against `audioDetectionThreshold`, as needed;
+    /// this function itself makes no judgment about either.
+    static func rms(of buffer: AVAudioPCMBuffer) -> Float? {
         guard let channelData = buffer.floatChannelData else { return nil }
         let frameCount = Int(buffer.frameLength)
         guard frameCount > 0 else { return nil }
@@ -320,7 +331,6 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
         for i in 0..<frameCount {
             sum += samples[i] * samples[i]
         }
-        let rms = sqrt(sum / Float(frameCount))
-        return min(1, rms * 8)
+        return sqrt(sum / Float(frameCount))
     }
 }
