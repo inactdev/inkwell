@@ -184,6 +184,7 @@ final class CaptureViewModel {
                 mode = .listening
                 isSegmentLive = true
                 recognitionFailed = false
+                recognitionFailedWithWordsHeard = false
                 noAudioDetected = false
             } catch {
                 authorizationDenied = true

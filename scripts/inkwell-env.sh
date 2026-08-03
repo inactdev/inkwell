@@ -349,8 +349,11 @@ inkwell_ensure_sim_grants() {
   echo "inkwell: seeding mic + speech-recognition grants (a fresh clone's first boot prunes the template's)" >&2
   for attempt in 1 2 3; do
     xcrun simctl privacy "$udid" grant microphone "$INKWELL_BUNDLE_ID" >&2 || return 1
+    # REPLACE, not IGNORE: this seed must win even if a row already exists
+    # with some other auth_value - IGNORE would silently leave a wrong
+    # pre-existing row un-fixed instead of actually granting the service.
     sqlite3 "$tcc_db" \
-      "INSERT OR IGNORE INTO access (service,client,client_type,auth_value,auth_reason,auth_version) VALUES ('kTCCServiceSpeechRecognition','$INKWELL_BUNDLE_ID',0,2,3,1);" || return 1
+      "INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version) VALUES ('kTCCServiceSpeechRecognition','$INKWELL_BUNDLE_ID',0,2,3,1);" || return 1
     # tccd is already running and may answer from its in-memory state rather
     # than the row just inserted underneath it - kick it so it re-reads.
     xcrun simctl spawn "$udid" launchctl kill SIGTERM system/com.apple.tccd 2>/dev/null || true
