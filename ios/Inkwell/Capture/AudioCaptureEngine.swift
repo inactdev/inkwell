@@ -30,10 +30,12 @@ protocol CaptureEngine: AnyObject, Sendable {
 /// direct RMS measurement to be indistinguishable, from the tap's own
 /// perspective, from a dead recognizer unless the level is tracked.
 enum RecognitionFailureReason: Sendable, Equatable {
-    /// The silence watchdog fired and every buffer this segment measured at
-    /// or below the noise floor - nothing, not even a mumble, ever arrived.
+    /// Every buffer this segment measured at or below the noise floor -
+    /// nothing, not even a mumble, ever arrived - whether the segment ended
+    /// via the silence watchdog timing out or the recognizer settling with
+    /// an error of its own on a mic route that never delivered anything.
     case noAudioDetected
-    /// The recognizer settled with an error, or the watchdog fired after
+    /// The segment ended (watchdog timeout or a recognizer error) after
     /// audio was actually observed this segment - a real recognition
     /// failure, not an absent input.
     case recognitionFailed
@@ -234,8 +236,14 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
                 // follows a deliberate stopCapturing() - stopCapturing()
                 // already flips isRecording off before cancelling the task,
                 // so a cancellation's own completion can't be mistaken for one.
+                // Classified the same way the watchdog is: a dead mic route
+                // can make the recognizer itself error out (e.g. "no speech
+                // detected") before silenceTimeout ever elapses, and that
+                // deserves the same actionable alert as the timeout would
+                // have given it, not a demotion to the generic failure just
+                // because an error arrived first.
                 if error != nil, self.isRecording {
-                    self.onRecognitionFailure?(.recognitionFailed)
+                    self.onRecognitionFailure?(self.observedAudioThisSegment ? .recognitionFailed : .noAudioDetected)
                 }
             }
         }

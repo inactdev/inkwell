@@ -55,6 +55,13 @@ final class CaptureViewModel {
     /// inkling, and a save-failure retry re-appends the same words on top
     /// of themselves.
     private var isSegmentLive = false
+    /// Cancelled and replaced rather than left to run whenever its flag is
+    /// re-triggered before its own dismissal fires - otherwise an earlier
+    /// still-sleeping dismiss can hide a later, unrelated showing of the
+    /// same transient early (e.g. a second refused empty Done inside the
+    /// first's 2.2s window).
+    private var emptyDoneHintDismissTask: Task<Void, Never>?
+    private var confirmationDismissTask: Task<Void, Never>?
 
     var liveTranscript: String { isSegmentLive ? engine.transcript : "" }
     var inputLevel: Float { engine.inputLevel }
@@ -207,8 +214,10 @@ final class CaptureViewModel {
             if recognitionFailed {
                 mode = .editing
                 showEmptyDoneHint = true
-                Task { @MainActor in
+                emptyDoneHintDismissTask?.cancel()
+                emptyDoneHintDismissTask = Task { @MainActor in
                     try? await Task.sleep(for: .seconds(2.2))
+                    guard !Task.isCancelled else { return }
                     showEmptyDoneHint = false
                 }
                 return
@@ -246,8 +255,10 @@ final class CaptureViewModel {
         }
 
         showConfirmation = true
-        Task { @MainActor in
+        confirmationDismissTask?.cancel()
+        confirmationDismissTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(2.2))
+            guard !Task.isCancelled else { return }
             showConfirmation = false
         }
         reset()
@@ -275,5 +286,7 @@ final class CaptureViewModel {
         recognitionFailedWithWordsHeard = false
         noAudioDetected = false
         showEmptyDoneHint = false
+        emptyDoneHintDismissTask?.cancel()
+        emptyDoneHintDismissTask = nil
     }
 }
