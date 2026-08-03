@@ -273,6 +273,38 @@ final class CaptureViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.mode, .editing)
     }
 
+    /// A fresh segment must clear the previous failure's facts together.
+    /// `recognitionFailed` and `noAudioDetected` already reset in
+    /// `startListening()`, but `recognitionFailedWithWordsHeard` stayed
+    /// stale until the next failure or reset - harmless only because the
+    /// alert recomputes it, an asymmetry a reader could mistake for
+    /// meaningful mid-segment state.
+    func testNewSegmentClearsAllStaleRecognitionFailureFacts() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+        engine.transcript = "Swap the buoy battery"
+        engine.failRecognition(reason: .noAudioDetected)
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+        XCTAssertTrue(viewModel.recognitionFailed)
+        XCTAssertTrue(viewModel.recognitionFailedWithWordsHeard)
+        XCTAssertTrue(viewModel.noAudioDetected)
+
+        // The mic key on the failed draft: dictation resumes, a new segment.
+        viewModel.resumeDictation()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+
+        XCTAssertFalse(viewModel.recognitionFailed)
+        XCTAssertFalse(
+            viewModel.recognitionFailedWithWordsHeard,
+            "the words-heard fact must reset with its sibling flags, not linger from the previous failure"
+        )
+        XCTAssertFalse(viewModel.noAudioDetected)
+    }
+
     /// The non-negotiable behind the whole fix: after a recognition failure
     /// with nothing heard, the recording preserved on disk may be the only
     /// record of the utterance, so Done with nothing typed must not silently
