@@ -164,9 +164,12 @@ every worktree gets its own simulator via `xcrun simctl clone` of that template.
 `simctl clone` copies the entire device data volume, including `TCC.db` - but the copied grant
 rows do NOT survive the clone's first boot: tccd prunes access rows for clients not installed on
 the device, and a fresh clone boots before the app is installed (see AGENTS.md's sharp-edge note
-for the full diagnosis). So `inkwell_boot_sim` in `scripts/inkwell-env.sh` re-seeds both grants
-right after boot (and kicks tccd so it re-reads the db); rows added post-boot stick for the
-device's lifetime, since each worktree device only ever boots once. The result from the
+for the full diagnosis). That prune can land as late as ~10s after `bootstatus` returns, and it
+also wipes rows seeded post-boot if they land before it runs - so `inkwell_boot_sim` in
+`scripts/inkwell-env.sh` uses the cloned rows as a canary: it waits for them to vanish (the one
+observable signal the prune has run), then seeds both grants (kicking tccd so it re-reads the
+db) and re-seeds until a seed survives a settle window. Rows seeded after the prune stick for
+the device's lifetime, since each worktree device only ever boots once. The result from the
 worktree's point of view is the same: every per-worktree simulator ends up granted with no
 manual step, and no risk of one lane's `simctl uninstall` resetting another lane's grants (per
 AGENTS.md's note that grants reset on uninstall even though the identity is nominally

@@ -385,6 +385,75 @@ final class CaptureViewModelTests: XCTestCase {
         XCTAssertEqual(store.inklings.count, 0)
     }
 
+    /// The hint's auto-dismiss used to be fire-and-forget: a second refused
+    /// empty Done inside the first's 2.2s window left the first timer
+    /// running, and it hid the retriggered showing early. Each retrigger
+    /// must restart the clock - the hint stays up past the point the first
+    /// timer would have fired, and still dismisses itself afterwards.
+    func testRetriggeredEmptyDoneHintIsNotHiddenEarlyByTheFirstTimer() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+        engine.failRecognition()
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+        viewModel.showRecognitionFailureAlert = false
+
+        viewModel.done()
+        XCTAssertTrue(viewModel.showEmptyDoneHint)
+
+        // A second refused Done inside the first hint's display window.
+        try await Task.sleep(for: .seconds(1.5))
+        viewModel.done()
+        XCTAssertTrue(viewModel.showEmptyDoneHint)
+
+        // Now past the first timer's 2.2s deadline but well inside the
+        // second's window (which runs to ~3.7s after the first Done).
+        try await Task.sleep(for: .seconds(1.2))
+        XCTAssertTrue(
+            viewModel.showEmptyDoneHint,
+            "the first Done's stale dismiss timer must not hide the retriggered hint early"
+        )
+
+        // The retriggered showing still dismisses itself.
+        try await waitUntil(timeout: 3) { !viewModel.showEmptyDoneHint }
+    }
+
+    /// Same idiom, same bug, for the save confirmation toast: saving a
+    /// second capture while the first save's toast is still up must not let
+    /// the first toast's timer hide the second one early.
+    func testRetriggeredConfirmationIsNotHiddenEarlyByTheFirstTimer() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+        engine.transcript = "Rig a solar charger for the buoy"
+        viewModel.done()
+        XCTAssertTrue(viewModel.showConfirmation)
+
+        // Save a second capture inside the first toast's display window.
+        try await Task.sleep(for: .seconds(1.5))
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+        engine.transcript = "Check the mooring line after the storm"
+        viewModel.done()
+        XCTAssertEqual(store.inklings.count, 2)
+        XCTAssertTrue(viewModel.showConfirmation)
+
+        // Past the first timer's deadline, inside the second's window.
+        try await Task.sleep(for: .seconds(1.2))
+        XCTAssertTrue(
+            viewModel.showConfirmation,
+            "the first save's stale dismiss timer must not hide the second save's toast early"
+        )
+
+        try await waitUntil(timeout: 3) { !viewModel.showConfirmation }
+    }
+
     private func makeStore() throws -> InklingStore {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CaptureViewModelTests-\(UUID().uuidString)", isDirectory: true)
