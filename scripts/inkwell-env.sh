@@ -302,7 +302,38 @@ inkwell_boot_sim() {
     xcrun simctl boot "$udid" 2>/dev/null || true
     xcrun simctl bootstatus "$udid" -b >/dev/null
   fi
+  inkwell_ensure_sim_grants "$udid" \
+    || echo "inkwell: WARNING - mic/speech-recognition grants did not land on $udid; anything requesting authorization headlessly will hang on a prompt nothing can answer" >&2
   inkwell_spawn_sim_watcher "$udid"
+}
+
+# The template's grants do NOT survive a clone's first boot: tccd prunes
+# access rows whose client isn't installed when a device boots, and a fresh
+# clone boots before the app is installed on it (proven directly - clone the
+# template, boot it, and both rows vanish within seconds, no install
+# involved). Whether a first test run on a fresh clone worked was therefore
+# a race between app install and tccd's prune pass, which is exactly the
+# "authorization flake" AudioSpikeTests kept hitting. Re-seeding here, after
+# boot, is stable: a worktree device boots once in its life, and rows added
+# post-boot are never pruned again.
+inkwell_ensure_sim_grants() {
+  local udid=$1 tcc_db rows
+  tcc_db="$HOME/Library/Developer/CoreSimulator/Devices/$udid/data/Library/TCC/TCC.db"
+  rows=$(sqlite3 "$tcc_db" \
+    "SELECT COUNT(*) FROM access WHERE client='$INKWELL_BUNDLE_ID' AND auth_value=2 AND service IN ('kTCCServiceMicrophone','kTCCServiceSpeechRecognition');" 2>/dev/null) || rows=""
+  [ "$rows" = "2" ] && return 0
+
+  echo "inkwell: re-seeding mic + speech-recognition grants (a fresh clone's first boot prunes the template's)" >&2
+  xcrun simctl privacy "$udid" grant microphone "$INKWELL_BUNDLE_ID" >&2 || return 1
+  sqlite3 "$tcc_db" \
+    "INSERT OR IGNORE INTO access (service,client,client_type,auth_value,auth_reason,auth_version) VALUES ('kTCCServiceSpeechRecognition','$INKWELL_BUNDLE_ID',0,2,3,1);" || return 1
+  # tccd is already running and may answer from its in-memory state rather
+  # than the row just inserted underneath it - kick it so it re-reads.
+  xcrun simctl spawn "$udid" launchctl kill SIGTERM system/com.apple.tccd 2>/dev/null || true
+
+  rows=$(sqlite3 "$tcc_db" \
+    "SELECT COUNT(*) FROM access WHERE client='$INKWELL_BUNDLE_ID' AND auth_value=2 AND service IN ('kTCCServiceMicrophone','kTCCServiceSpeechRecognition');" 2>/dev/null) || rows=""
+  [ "$rows" = "2" ]
 }
 
 # Keyed by UDID rather than by worktree: a worktree that gets a fresh clone

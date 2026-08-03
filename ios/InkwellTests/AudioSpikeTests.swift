@@ -363,10 +363,13 @@ final class AudioSpikeTests: XCTestCase {
             granted = await AudioCaptureEngine.requestAuthorization()
             exp.fulfill()
         }
-        // The grants themselves are pre-seeded in this environment, but the
-        // very first authorization round-trip after a fresh simulator
-        // boot/install has been observed to take longer than 10s while the
-        // speech/TCC daemons spin up - seen once as a real CI-style flake.
+        // With the grants seeded (dev.sh re-seeds them post-boot, because
+        // tccd prunes the template's rows on a fresh clone's first boot)
+        // this answers in well under a second. Without them it never
+        // answers at all - the request waits on a permission prompt nothing
+        // headless can dismiss - so a wide timeout buys nothing beyond
+        // slack for daemon spin-up; past "flakes" here at 10s and 30s were
+        // the missing-grant hang, not slowness.
         wait(for: [exp], timeout: 30)
         return granted
     }
