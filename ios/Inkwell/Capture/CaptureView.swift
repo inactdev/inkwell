@@ -97,9 +97,21 @@ struct CaptureView: View {
             } message: {
                 Text("Your words are still here. Tap Done again in a moment.")
             }
+            .alert(
+                recognitionFailureAlertTitle,
+                isPresented: $viewModel.showRecognitionFailureAlert
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(recognitionFailureAlertMessage)
+            }
 
             if viewModel.showConfirmation {
                 confirmationToast
+            }
+
+            if viewModel.showEmptyDoneHint {
+                emptyDoneHint
             }
         }
         .alert("Inkwell needs your voice", isPresented: $viewModel.authorizationDenied) {
@@ -202,6 +214,23 @@ struct CaptureView: View {
         Binding(get: { viewModel.committedText }, set: { viewModel.updateCommittedText($0) })
     }
 
+    /// No audio at all is a more specific, more actionable fact than a
+    /// generic recognition failure - the owner can check mic access or the
+    /// simulator's audio input instead of just trying again and hoping.
+    private var recognitionFailureAlertTitle: String {
+        if viewModel.noAudioDetected { return "No sound reached the microphone" }
+        return viewModel.recognitionFailedWithWordsHeard ? "Dictation stopped" : "Didn't catch that"
+    }
+
+    private var recognitionFailureAlertMessage: String {
+        if viewModel.noAudioDetected {
+            return "Check mic access for this simulator/device, then try again."
+        }
+        return viewModel.recognitionFailedWithWordsHeard
+            ? "Your words are here - type the rest, or try the well again."
+            : "Speech recognition didn't come through. Type it in instead, or try the well again."
+    }
+
     /// The keyboard accessory carries its own Discard and Done while the
     /// editor holds focus. Now that the column is bounded and the footer
     /// survives above the keyboard rather than hiding behind it, showing both
@@ -254,6 +283,24 @@ struct CaptureView: View {
         }
         .transition(.move(edge: .bottom).combined(with: .opacity))
         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.showConfirmation)
+    }
+
+    private var emptyDoneHint: some View {
+        VStack {
+            Spacer()
+            Text("Nothing to save - tap Discard to leave without keeping the recording.")
+                .font(.system(.subheadline, design: .serif))
+                .foregroundStyle(InkwellPalette.parchment)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(RoundedRectangle(cornerRadius: 22).fill(InkwellPalette.ink))
+                .padding(.horizontal, 24)
+                .padding(.bottom, 100)
+                .accessibilityIdentifier("emptyDoneHint")
+        }
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.showEmptyDoneHint)
     }
 }
 

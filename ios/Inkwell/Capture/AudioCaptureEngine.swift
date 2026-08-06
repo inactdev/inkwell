@@ -14,6 +14,31 @@ protocol CaptureEngine: AnyObject, Sendable {
     func stopCapturing()
     /// Called when the system takes the audio session away mid-segment.
     func setInterruptionHandler(_ handler: @escaping @Sendable () -> Void)
+    /// Called when a segment can no longer produce a transcript: the
+    /// recognizer settled with an error, or made no transcript progress for
+    /// `AudioCaptureEngine.silenceTimeout` - whether it never produced a
+    /// word or went dead after some. Without this, a dead recognizer and a
+    /// quietly-working one are indistinguishable from the UI: both just
+    /// show "Listening…" forever.
+    func setRecognitionFailureHandler(_ handler: @escaping @Sendable (RecognitionFailureReason) -> Void)
+}
+
+/// Distinguishes *why* a segment produced nothing, so the alert can say
+/// something more useful than "didn't catch that" when the real cause is
+/// that no audio ever reached the microphone at all - e.g. a simulator
+/// whose host mic access or audio input routing isn't set up, confirmed by
+/// direct RMS measurement to be indistinguishable, from the tap's own
+/// perspective, from a dead recognizer unless the level is tracked.
+enum RecognitionFailureReason: Sendable, Equatable {
+    /// Every buffer this segment measured at or below the noise floor -
+    /// nothing, not even a mumble, ever arrived - whether the segment ended
+    /// via the silence watchdog timing out or the recognizer settling with
+    /// an error of its own on a mic route that never delivered anything.
+    case noAudioDetected
+    /// The segment ended (watchdog timeout or a recognizer error) after
+    /// audio was actually observed this segment - a real recognition
+    /// failure, not an absent input.
+    case recognitionFailed
 }
 
 /// Feeds one microphone tap to two independent consumers at once:
@@ -34,10 +59,46 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
         case audioFileCreationFailed
     }
 
+    /// How long a segment can run without any transcript progress - measured
+    /// from the last partial result, or from the segment's start if none has
+    /// arrived yet - before the recognizer is treated as dead rather than
+    /// quietly working, e.g. no audio is actually reaching it. Long enough
+    /// that a normal pause to gather a thought doesn't trip it; short enough
+    /// that the owner isn't left staring at "Listening…" indefinitely.
+    ///
+    /// `INKWELL_SILENCE_TIMEOUT_OVERRIDE` (same launch-environment seam as
+    /// `INKWELL_BACKEND_URL` in AppConfig) lets a UI test that needs to hold
+    /// `.listening` open - this headless simulator's segments never receive
+    /// audio, so the watchdog otherwise always ends them - widen the window
+    /// instead of racing the production value. Unset means 10, everywhere.
+    static let silenceTimeout: TimeInterval = {
+        if let raw = ProcessInfo.processInfo.environment["INKWELL_SILENCE_TIMEOUT_OVERRIDE"],
+           let seconds = TimeInterval(raw), seconds > 0 {
+            return seconds
+        }
+        return 10
+    }()
+
     private(set) var transcript: String = ""
     private(set) var isRecording = false
     /// 0...1, driven by the same tap, for the inkwell's reaction to real audio.
     private(set) var inputLevel: Float = 0
+
+    /// Raw RMS below this reads as noise-floor silence rather than real
+    /// input - proven by direct measurement (RMS logged while feeding this
+    /// exact tap real audio from the host, both spoken and via a
+    /// synthesized clip played through system output) that genuine silence
+    /// here reads as exactly 0.0 RMS with no variance, so any small margin
+    /// above zero already separates "nothing arrived" from "something did."
+    /// Deliberately raw RMS, not the 0...1 value `inputLevel` displays -
+    /// comparing against a UI-scaled number would make this threshold's
+    /// effective floor a function of that scaling factor instead of what it
+    /// says on its face.
+    @ObservationIgnored static let audioDetectionThreshold: Float = 0.00125
+    /// Multiplies raw RMS into the 0...1 range `inputLevel` uses for the
+    /// inkwell's visual reaction to real audio - a UI scaling choice,
+    /// unrelated to `audioDetectionThreshold`.
+    @ObservationIgnored private static let visualLevelGain: Float = 8
 
     @ObservationIgnored private let audioEngine: AVAudioEngine
     @ObservationIgnored private let speechRecognizer: SFSpeechRecognizer?
@@ -46,7 +107,13 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
     @ObservationIgnored private var audioFile: AVAudioFile?
     @ObservationIgnored private var onFinalTranscript: ((String) -> Void)?
     @ObservationIgnored private var onInterruption: (@Sendable () -> Void)?
+    @ObservationIgnored private var onRecognitionFailure: (@Sendable (RecognitionFailureReason) -> Void)?
     @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
+    @ObservationIgnored private var silenceWatchdog: Task<Void, Never>?
+    /// Whether any buffer this segment has measured above the noise floor -
+    /// the fact that distinguishes "no audio ever reached the mic" from an
+    /// ordinary recognition failure when the watchdog fires.
+    @ObservationIgnored private var observedAudioThisSegment = false
     /// Bumped per capture segment so a callback from a segment that has
     /// already been stopped can't publish over the current one's state.
     @ObservationIgnored private var generation = 0
@@ -120,6 +187,7 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
         }
         recognitionRequest = request
         transcript = ""
+        observedAudioThisSegment = false
         generation &+= 1
         let generation = self.generation
 
@@ -134,10 +202,13 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
             // render thread never touches observed state.
             request.append(buffer)
             try? file.write(from: buffer)
-            guard let self, let level = Self.level(of: buffer) else { return }
+            guard let self, let rms = Self.rms(of: buffer) else { return }
             Task { @MainActor in
                 guard self.isRecording, self.generation == generation else { return }
-                self.inputLevel = level
+                self.inputLevel = min(1, rms * Self.visualLevelGain)
+                if rms > Self.audioDetectionThreshold {
+                    self.observedAudioThisSegment = true
+                }
             }
         }
 
@@ -146,6 +217,7 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
             try audioEngine.start()
         }
         isRecording = true
+        watchForSilence(generation: generation)
 
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self else { return }
@@ -153,13 +225,46 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
             let settled = result?.isFinal == true || error != nil
             Task { @MainActor in
                 guard self.generation == generation else { return }
-                if let text {
+                if let text, text != self.transcript {
                     self.transcript = text
+                    self.watchForSilence(generation: generation)
                 }
                 if settled {
                     self.onFinalTranscript?(self.transcript)
                 }
+                // Only a genuine mid-segment failure, not the settle that
+                // follows a deliberate stopCapturing() - stopCapturing()
+                // already flips isRecording off before cancelling the task,
+                // so a cancellation's own completion can't be mistaken for one.
+                // Classified the same way the watchdog is: a dead mic route
+                // can make the recognizer itself error out (e.g. "no speech
+                // detected") before silenceTimeout ever elapses, and that
+                // deserves the same actionable alert as the timeout would
+                // have given it, not a demotion to the generic failure just
+                // because an error arrived first.
+                if error != nil, self.isRecording {
+                    self.onRecognitionFailure?(self.observedAudioThisSegment ? .recognitionFailed : .noAudioDetected)
+                }
             }
+        }
+    }
+
+    /// The recognizer can go completely silent - no partial result, no
+    /// error, ever - if no usable audio is reaching it at all (seen in this
+    /// project's headless Simulator, where the mic tap gets no signal; also
+    /// possible on-device if the input format or session is wrong in some
+    /// way that doesn't throw). It can equally die *after* producing words,
+    /// again with no error. Without this, either looks identical to a
+    /// recognizer that's still quietly working: "Listening…" forever. Armed
+    /// at segment start and re-armed on every transcript change, so it fires
+    /// only after `silenceTimeout` with no progress at all.
+    private func watchForSilence(generation: Int) {
+        silenceWatchdog?.cancel()
+        silenceWatchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.silenceTimeout))
+            guard !Task.isCancelled else { return }
+            guard let self, self.isRecording, self.generation == generation else { return }
+            self.onRecognitionFailure?(self.observedAudioThisSegment ? .recognitionFailed : .noAudioDetected)
         }
     }
 
@@ -172,11 +277,17 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
         onInterruption = handler
     }
 
+    func setRecognitionFailureHandler(_ handler: @escaping @Sendable (RecognitionFailureReason) -> Void) {
+        onRecognitionFailure = handler
+    }
+
     func stopCapturing() {
         if let interruptionObserver {
             NotificationCenter.default.removeObserver(interruptionObserver)
             self.interruptionObserver = nil
         }
+        silenceWatchdog?.cancel()
+        silenceWatchdog = nil
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         recognitionRequest?.endAudio()
@@ -190,7 +301,15 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
     }
 
     /// Test-only teardown for a tap installed on an arbitrary node (e.g. a player node).
+    /// Unlike `stopCapturing()`, this deliberately keeps `recognitionRequest`
+    /// and `recognitionTask` alive: offline rendering feeds audio faster than
+    /// recognition processes it, so at this point the request still holds
+    /// queued, unprocessed audio - releasing it here drops that backlog and
+    /// truncates the final transcript a caller waits for after this returns.
+    /// The references are released with the engine itself at test teardown.
     func stopCapture(tappedNode node: AVAudioNode, bus: Int) {
+        silenceWatchdog?.cancel()
+        silenceWatchdog = nil
         node.removeTap(onBus: bus)
         recognitionRequest?.endAudio()
         recognitionTask?.finish()
@@ -208,7 +327,10 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
 
     /// Pure buffer math, safe to run on the render thread. Nil means this
     /// buffer carries nothing to measure, so the level should be left as-is.
-    private static func level(of buffer: AVAudioPCMBuffer) -> Float? {
+    /// Returns raw RMS - callers scale it for visualization (`visualLevelGain`)
+    /// or compare it directly against `audioDetectionThreshold`, as needed;
+    /// this function itself makes no judgment about either.
+    static func rms(of buffer: AVAudioPCMBuffer) -> Float? {
         guard let channelData = buffer.floatChannelData else { return nil }
         let frameCount = Int(buffer.frameLength)
         guard frameCount > 0 else { return nil }
@@ -217,7 +339,6 @@ final class AudioCaptureEngine: CaptureEngine, @unchecked Sendable {
         for i in 0..<frameCount {
             sum += samples[i] * samples[i]
         }
-        let rms = sqrt(sum / Float(frameCount))
-        return min(1, rms * 8)
+        return sqrt(sum / Float(frameCount))
     }
 }

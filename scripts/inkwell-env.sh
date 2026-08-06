@@ -297,12 +297,76 @@ inkwell_ensure_worktree_sim() {
 }
 
 inkwell_boot_sim() {
-  local udid=$1
+  local udid=$1 just_booted=""
   if ! xcrun simctl list devices | grep -F "$udid" | grep -q "(Booted)"; then
     xcrun simctl boot "$udid" 2>/dev/null || true
     xcrun simctl bootstatus "$udid" -b >/dev/null
+    just_booted=1
   fi
+  inkwell_ensure_sim_grants "$udid" "$just_booted" \
+    || echo "inkwell: WARNING - mic/speech-recognition grants did not land on $udid; anything requesting authorization headlessly will hang on a prompt nothing can answer" >&2
   inkwell_spawn_sim_watcher "$udid"
+}
+
+# The template's grants do NOT survive a clone's first boot: tccd prunes
+# access rows whose client isn't installed when a device boots, and a fresh
+# clone boots before the app is installed on it (proven directly - clone the
+# template, boot it, and both rows vanish, no install involved). Whether a
+# first test run on a fresh clone worked was therefore a race between app
+# install and tccd's prune pass, which is exactly the "authorization flake"
+# AudioSpikeTests kept hitting. Rows seeded after that prune stick for the
+# device's lifetime, and a worktree device boots once in its life - but the
+# prune can land as late as ~10s AFTER bootstatus returns (both failure
+# shapes proven live: a count here read 2 and the prune then wiped both
+# rows mid-suite, and a fresh seed that verified fine 3s later got wiped
+# too). So on the boot this call itself performed, the cloned rows are
+# treated as a canary: their disappearance is the one observable signal
+# that the prune has run and it is finally safe to seed.
+inkwell_ensure_sim_grants() {
+  local udid=$1 just_booted=$2 tcc_db rows attempt waited
+  tcc_db="$HOME/Library/Developer/CoreSimulator/Devices/$udid/data/Library/TCC/TCC.db"
+
+  rows=$(sqlite3 "$tcc_db" \
+    "SELECT COUNT(*) FROM access WHERE client='$INKWELL_BUNDLE_ID' AND auth_value=2 AND service IN ('kTCCServiceMicrophone','kTCCServiceSpeechRecognition');" 2>/dev/null) || rows=""
+  if [ -z "$just_booted" ]; then
+    # A device that was already up got past its first-boot prune long ago -
+    # rows present now are the ones that survived it.
+    [ "$rows" = "2" ] && return 0
+  elif [ "$rows" = "2" ]; then
+    echo "inkwell: waiting for tccd's first-boot prune before seeding grants (cloned rows are the canary)" >&2
+    waited=0
+    while [ "$waited" -lt 30 ]; do
+      sleep 2; waited=$((waited + 2))
+      rows=$(sqlite3 "$tcc_db" \
+        "SELECT COUNT(*) FROM access WHERE client='$INKWELL_BUNDLE_ID' AND auth_value=2 AND service IN ('kTCCServiceMicrophone','kTCCServiceSpeechRecognition');" 2>/dev/null) || rows=""
+      [ "$rows" != "2" ] && break
+    done
+    # Canary still standing after the deadline: no prune is coming (or the
+    # app is already installed, shielding the rows) - fall through and let
+    # the seed-and-verify below settle it either way.
+  fi
+
+  echo "inkwell: seeding mic + speech-recognition grants (a fresh clone's first boot prunes the template's)" >&2
+  for attempt in 1 2 3; do
+    xcrun simctl privacy "$udid" grant microphone "$INKWELL_BUNDLE_ID" >&2 || return 1
+    # REPLACE, not IGNORE: this seed must win even if a row already exists
+    # with some other auth_value - IGNORE would silently leave a wrong
+    # pre-existing row un-fixed instead of actually granting the service.
+    sqlite3 "$tcc_db" \
+      "INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version) VALUES ('kTCCServiceSpeechRecognition','$INKWELL_BUNDLE_ID',0,2,3,1);" || return 1
+    # tccd is already running and may answer from its in-memory state rather
+    # than the row just inserted underneath it - kick it so it re-reads.
+    xcrun simctl spawn "$udid" launchctl kill SIGTERM system/com.apple.tccd 2>/dev/null || true
+
+    # Only trust a seed that outlives a settle window - one that lands
+    # before a still-pending prune pass gets wiped with the clone's rows.
+    sleep 3
+    rows=$(sqlite3 "$tcc_db" \
+      "SELECT COUNT(*) FROM access WHERE client='$INKWELL_BUNDLE_ID' AND auth_value=2 AND service IN ('kTCCServiceMicrophone','kTCCServiceSpeechRecognition');" 2>/dev/null) || rows=""
+    [ "$rows" = "2" ] && return 0
+    echo "inkwell: grants were pruned out from under attempt $attempt - re-seeding" >&2
+  done
+  return 1
 }
 
 # Keyed by UDID rather than by worktree: a worktree that gets a fresh clone

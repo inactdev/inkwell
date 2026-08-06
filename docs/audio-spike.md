@@ -12,23 +12,27 @@ what `AudioCaptureEngine.beginCapture(tappingNode:bus:to:)` in the app does.
 node.installTap(onBus: bus, bufferSize: 1024, format: format) { [weak self] buffer, _ in
     request.append(buffer)                                       // consumer 1: live words
     try? file.write(from: buffer)                                // consumer 2: the immutable utterance
-    guard let self, let level = Self.level(of: buffer) else { return }
-    Task { @MainActor in self.inputLevel = level }               // consumer 3: inkwell audio reactivity
+    guard let self, let rms = Self.rms(of: buffer) else { return }
+    Task { @MainActor in                                         // consumer 3: inkwell audio reactivity
+        self.inputLevel = min(1, rms * Self.visualLevelGain)
+    }
 }
 ```
 
 One tap callback, three readers of the same `AVAudioPCMBuffer`. No format conversion, no
 copying required - `SFSpeechAudioBufferRecognitionRequest.append` and `AVAudioFile.write`
 both accept the buffer as-is. `request` and `file` are captured locals rather than properties
-read back off `self`, and the level is computed with pure buffer math and published on the main
-actor, so this block never touches observed state from the audio render thread.
+read back off `self`, and the raw RMS is computed with pure buffer math while the scaled level
+is published on the main actor, so this block never touches observed state from the audio render
+thread.
 
 Source: `ios/Inkwell/Capture/AudioCaptureEngine.swift`.
 
 ## How it was verified
 
-This agent ran headless, with no human present to speak into a simulator microphone. Two
-tests cover what a human tap-and-speak session would have proven, from different angles:
+This agent ran headless, with no human present to speak into a simulator microphone. The
+`AudioSpikeTests` suite covers what a human tap-and-speak session would have proven, from
+different angles:
 
 1. **`testSingleTapFeedsBothRecognitionAndFileWriteSimultaneously`** (the real proof).
    A short phrase ("The submarine bay needs a stronger hull before the next dive.") was
@@ -60,7 +64,24 @@ tests cover what a human tap-and-speak session would have proven, from different
    speaker in this environment; that requires a human running the app and is exactly what
    the manual capture screen is for.
 
-Run both:
+3. **`testRealInputNodeSilenceIsReportedRatherThanHangingForever`** (issue #12's regression
+   test). Follow-up to #2: this environment's real `inputNode` doesn't just go untested by
+   this suite, it reliably produces *no signal at all* - confirmed via
+   `ios/InkwellUITests/VoiceCaptureFailureUITests.swift` driving the actual capture screen
+   and observing 10s of "Listening…" with a byte-identical screenshot at every check. That
+   used to be silent in the product sense too: nothing told `CaptureViewModel` or the owner
+   that the recognizer would never produce a word. This test asserts
+   `AudioCaptureEngine.setRecognitionFailureHandler` fires within `silenceTimeout` against the
+   real input node - the fix, not just the mechanism. Two companion cases pin down the
+   watchdog itself: `testSilenceTimeoutIsWideEnoughForAThinkingPause` (a normal pause to
+   gather a thought must not trip it) and
+   `testRecognizerGoingDeadAfterPartialWordsStillReportsFailure` (it re-arms on every
+   transcript change, so a recognizer that goes dead *after* producing words still surfaces).
+   Since the field-report follow-up below, both also pin the failure's *classification*: the
+   real-silence case must report `RecognitionFailureReason.noAudioDetected`, and a fire after
+   real audio was fed through the tap must report `.recognitionFailed`, never `noAudioDetected`.
+
+Run the whole suite:
 
 ```
 ./dev.sh ios test -only-testing:InkwellTests/AudioSpikeTests
@@ -69,15 +90,57 @@ Run both:
 That runs against a simulator cloned for this worktree with both grants above already applied, so
 the TCC step is no longer a manual one - see `docs/runtime-isolation.md`.
 
-Both pass in about 4 seconds total, no flakes across repeated runs.
+All of them pass with no flakes across repeated runs; the watchdog cases each wait on
+`AudioCaptureEngine.silenceTimeout`, so the suite takes on the order of that timeout rather
+than the few seconds the original two tests needed.
 
 ## What this does and doesn't prove
 
 Proven: the API-level mechanism (one tap, two consumers, no format conflicts, no engine
 crashes) works exactly as the production capture screen uses it, verified with real speech
-content, not silence.
+content, not silence. Also proven: this environment's real `inputNode` is silence, not an
+untested unknown, and the app now surfaces that rather than hanging - see AGENTS.md.
 
 Not proven here (needs a human with the simulator focused and a working mic, i.e. actual
 manual QA): that live human speech through the Simulator's mic passthrough produces good
 transcription quality in practice. That's a UX/quality question for later manual testing,
 not a mechanism question - the mechanism this spike was asked to verify is sound.
+
+## Field report follow-up: silence at the tap is not the same bug as a failed recognizer
+
+A captain field report after the failure-visibility fix shipped (voice capture still produced
+no transcript on his own machine, in a normal windowed Simulator, not this headless one) raised
+the same question this doc already flags above: was the mechanism ever proven against something
+other than silence? It was - see `testSingleTapFeedsBothRecognitionAndFileWriteSimultaneously`
+above - so the recognizer itself is not the suspect. Direct measurement settled the rest: a
+temporary RMS tap on `AudioCaptureEngine`'s real `inputNode` tap, run while repeatedly playing
+synthesized speech through this Mac's host speakers during the listening window, showed the tap
+firing correctly (real, well-formed buffers, ~100ms apart) but every single sample reading
+exactly `0.0` - with or without host audio playing. That is real, live confirmation that no host
+audio reaches this booted simulator's virtual microphone at all, distinct from "the recognizer
+received audio and failed" - a distinction the product previously had no way to make, and no way
+to tell the owner about.
+
+`AudioCaptureEngine.beginCapture` now tracks whether any buffer in a segment exceeded a small
+raw RMS floor (`audioDetectionThreshold`) - deliberately compared against `rms(of:)`'s raw
+output, not the 0...1 value `inputLevel` scales it into for the inkwell's visual reaction
+(`visualLevelGain`), so the threshold's effective floor is exactly what its own value says
+rather than a function of an unrelated UI scaling factor. Whether a segment ends via the
+silence watchdog timing out or the recognizer itself settling with a genuine mid-segment error
+(not a thrown startup error - that's a separate, existing alert), the same check applies: if no
+buffer this segment ever crossed the floor, `RecognitionFailureReason.noAudioDetected` reaches
+`CaptureViewModel` and the alert says so specifically ("No sound reached the microphone")
+instead of the generic "Didn't catch that" - because the fix for the two failures is different:
+check mic access/audio input routing, versus just try again. A dead mic route can make the
+recognizer error out on its own before the watchdog ever gets a chance to fire, and that
+deserves the same actionable alert the timeout would have given it. `VoiceCaptureFailureUITests`
+now expects this specific alert, since this environment's real `inputNode` reliably produces
+exactly this case.
+
+This does not, on its own, tell you *why* host audio doesn't reach the simulator on a given
+machine - the two most likely causes are the macOS host's own microphone permission for
+Simulator.app/Xcode (System Settings > Privacy & Security > Microphone - separate from the
+in-app iOS grant handled via TCC.db above) and the Simulator's own per-boot `I/O > Audio Input`
+device selection, neither of which is inspectable or settable headlessly (the host TCC database
+is SIP-protected without Full Disk Access, and the Simulator's audio input device is a
+GUI-only per-window setting). Testing on a real phone sidesteps both entirely.

@@ -23,6 +23,14 @@ final class LongDictationLayoutUITests: XCTestCase {
 
     func testLongDictationStaysScrollableAndTheHeaderStaysPut() throws {
         let app = XCUIApplication()
+        // This test's whole point is holding `.listening` open while probing
+        // layout, but this headless simulator never delivers audio, so the
+        // engine's silence watchdog would end the segment mid-assertion.
+        // Widening the timeout through the app's launch-environment seam
+        // removes that wall clock from the test entirely - the failure path
+        // itself is covered by VoiceCaptureFailureUITests, which deliberately
+        // runs on the real default.
+        app.launchEnvironment["INKWELL_SILENCE_TIMEOUT_OVERRIDE"] = "60"
         app.launch()
 
         let inkwell = app.otherElements["inkwell"]
@@ -43,7 +51,6 @@ final class LongDictationLayoutUITests: XCTestCase {
         let resumeButton = app.buttons["Resume dictation"]
         XCTAssertTrue(resumeButton.waitForExistence(timeout: 3))
         resumeButton.tap()
-        dismissSystemAlertIfPresent(app)
 
         // Back in .listening with the long passage now rendered as the live
         // transcript - the exact case that had no height ceiling.

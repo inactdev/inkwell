@@ -13,8 +13,32 @@ final class CaptureViewModel {
     private(set) var committedText: String = ""
     private(set) var draftID = UUID()
     var showConfirmation = false
+    /// Brief hint shown when Done refuses to act because the failure
+    /// recording is the only thing left of the draft - a refused action
+    /// must be visible, never a button that appears to do nothing.
+    var showEmptyDoneHint = false
     var authorizationDenied = false
     var saveFailed = false
+    /// Presents the failure alert. SwiftUI resets this to false the moment
+    /// the owner dismisses the alert, so it cannot double as the record of
+    /// the failure itself - that is `recognitionFailed`'s job.
+    var showRecognitionFailureAlert = false
+    /// The durable fact that this draft's latest capture segment failed,
+    /// outliving the alert's dismissal. While true, the audio preserved on
+    /// disk may be the only record of the utterance, so an empty Done must
+    /// not silently discard it. Cleared when a new segment starts or the
+    /// draft ends.
+    private(set) var recognitionFailed = false
+    /// Decided here, not in the view: whether any words had made it into the
+    /// draft by the time recognition failed, so the alert can reassure
+    /// ("your words are here") instead of implying they were lost.
+    private(set) var recognitionFailedWithWordsHeard = false
+    /// True when the failure was specifically that no audio ever reached the
+    /// microphone this segment - a more specific, more actionable fact than
+    /// a generic recognition failure, so the alert can say so directly
+    /// rather than leaving the owner to guess whether it's a mic/simulator
+    /// setup problem or the recognizer itself.
+    private(set) var noAudioDetected = false
 
     private let engine: any CaptureEngine
     private let store: InklingStore
@@ -31,6 +55,13 @@ final class CaptureViewModel {
     /// inkling, and a save-failure retry re-appends the same words on top
     /// of themselves.
     private var isSegmentLive = false
+    /// Cancelled and replaced rather than left to run whenever its flag is
+    /// re-triggered before its own dismissal fires - otherwise an earlier
+    /// still-sleeping dismiss can hide a later, unrelated showing of the
+    /// same transient early (e.g. a second refused empty Done inside the
+    /// first's 2.2s window).
+    private var emptyDoneHintDismissTask: Task<Void, Never>?
+    private var confirmationDismissTask: Task<Void, Never>?
 
     var liveTranscript: String { isSegmentLive ? engine.transcript : "" }
     var inputLevel: Float { engine.inputLevel }
@@ -53,6 +84,9 @@ final class CaptureViewModel {
         engine.setInterruptionHandler { [weak self] in
             Task { @MainActor in self?.captureWasInterrupted() }
         }
+        engine.setRecognitionFailureHandler { [weak self] reason in
+            Task { @MainActor in self?.captureRecognitionFailed(reason: reason) }
+        }
     }
 
     /// The system took the audio session mid-segment (a call, Siri, an
@@ -72,6 +106,25 @@ final class CaptureViewModel {
         if !hasContent {
             discardDraft()
         }
+    }
+
+    /// The recognizer settled with an error, or stopped making transcript
+    /// progress - whether it never produced a word or went dead after some;
+    /// see `AudioCaptureEngine.silenceTimeout`. Unlike an interruption,
+    /// nothing about this is self-evident to the owner, so it must say so
+    /// rather than just quietly dropping back to idle. Always lands in
+    /// editing, even with nothing heard: `engine.stopCapturing()` already ran,
+    /// but the draft (and any audio already written to disk for it) stays
+    /// alive until the owner decides what to do with it - typing over a
+    /// failed recognition is the one path already proven to work, and a
+    /// silent reset here would just be this same bug moved later.
+    private func captureRecognitionFailed(reason: RecognitionFailureReason) {
+        guard mode == .listening else { return }
+        beginEditing()
+        recognitionFailedWithWordsHeard = !committedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        recognitionFailed = true
+        noAudioDetected = reason == .noAudioDetected
+        showRecognitionFailureAlert = true
     }
 
     /// Tapping the well: start listening from idle/editing, or - while
@@ -118,10 +171,21 @@ final class CaptureViewModel {
                 // transcript carries the full history forward; only the
                 // audio companion is scoped to the most recent segment. A
                 // fine tradeoff for the skeleton; worth revisiting if
-                // multi-segment capture becomes common.
+                // multi-segment capture becomes common. Known limitation,
+                // accepted for now: the silence watchdog re-arms on every
+                // transcript change, so it can also end a segment after an
+                // ordinary mid-dictation pause - resuming from that alert
+                // truncates the earlier segment's recording just like a
+                // manual edit-then-resume does (the words themselves survive
+                // in committedText). Full multi-segment audio preservation
+                // is queued as separate work (the offline-first capture
+                // rebuild), not part of this fix.
                 try engine.startCapturing(to: store.audioURL(for: draftID))
                 mode = .listening
                 isSegmentLive = true
+                recognitionFailed = false
+                recognitionFailedWithWordsHeard = false
+                noAudioDetected = false
             } catch {
                 authorizationDenied = true
             }
@@ -143,6 +207,22 @@ final class CaptureViewModel {
 
         let text = committedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
+            // After a recognition failure, the recording preserved on disk
+            // may be the only record of what was said. Done with nothing
+            // typed must not silently take it - only the explicit Discard
+            // action may delete it. Absent such a failure, an empty Done is
+            // the owner walking away from a draft they chose to leave blank.
+            if recognitionFailed {
+                mode = .editing
+                showEmptyDoneHint = true
+                emptyDoneHintDismissTask?.cancel()
+                emptyDoneHintDismissTask = Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(2.2))
+                    guard !Task.isCancelled else { return }
+                    showEmptyDoneHint = false
+                }
+                return
+            }
             discardDraft()
             return
         }
@@ -176,8 +256,10 @@ final class CaptureViewModel {
         }
 
         showConfirmation = true
-        Task { @MainActor in
+        confirmationDismissTask?.cancel()
+        confirmationDismissTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(2.2))
+            guard !Task.isCancelled else { return }
             showConfirmation = false
         }
         reset()
@@ -201,5 +283,11 @@ final class CaptureViewModel {
         committedText = ""
         draftID = UUID()
         isSegmentLive = false
+        recognitionFailed = false
+        recognitionFailedWithWordsHeard = false
+        noAudioDetected = false
+        showEmptyDoneHint = false
+        emptyDoneHintDismissTask?.cancel()
+        emptyDoneHintDismissTask = nil
     }
 }

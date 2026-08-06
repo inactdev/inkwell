@@ -181,6 +181,311 @@ final class CaptureViewModelTests: XCTestCase {
         XCTAssertEqual(store.inklings.count, 0, "nothing was said, so nothing should be saved")
     }
 
+    /// The bug this task exists to fix: a recognizer that produces nothing
+    /// (settles with an error, or the engine's silence timeout gives up)
+    /// used to leave the screen claiming "Listening…" forever, with nothing
+    /// to act on. It must now surface as a visible failure, and it must not
+    /// destroy the draft - the audio already on disk for it is the only
+    /// record of what was said if no words were ever recognized.
+    func testRecognitionFailureWithNoWordsHeardSurfacesAndKeepsTheDraftEditable() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+
+        engine.failRecognition()
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+
+        XCTAssertTrue(viewModel.recognitionFailed, "a recognizer that produced nothing must not fail silently")
+        XCTAssertTrue(viewModel.showRecognitionFailureAlert, "the failure must present its alert, not just record itself")
+        XCTAssertFalse(
+            viewModel.recognitionFailedWithWordsHeard,
+            "nothing was heard - the alert must not claim any words are here"
+        )
+        XCTAssertFalse(
+            viewModel.noAudioDetected,
+            "a generic recognition failure is not the same fact as no audio ever reaching the mic"
+        )
+        XCTAssertEqual(viewModel.mode, .editing, "the draft must stay open to type into, not reset to idle")
+        XCTAssertEqual(store.inklings.count, 0, "nothing was heard, so nothing should have been saved yet")
+
+        // The proven-working typed path recovers the idea.
+        viewModel.updateCommittedText("Check the mooring line after the storm")
+        viewModel.done()
+        XCTAssertEqual(store.inklings.count, 1)
+    }
+
+    /// The field report that motivated this distinction: a recognition
+    /// failure caused by no audio ever reaching the microphone (a
+    /// simulator's host mic access or audio input routing, not the
+    /// recognizer) must say so specifically, not read as an identical
+    /// generic "didn't catch that" - the owner needs a different next step
+    /// (check mic access) than for an ordinary recognition failure (just
+    /// try again).
+    func testRecognitionFailureWithNoAudioDetectedIsDistinguishedFromAGenericFailure() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+
+        engine.failRecognition(reason: .noAudioDetected)
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+
+        XCTAssertTrue(viewModel.recognitionFailed)
+        XCTAssertTrue(viewModel.showRecognitionFailureAlert)
+        XCTAssertTrue(
+            viewModel.noAudioDetected,
+            "the specific fact - no audio ever arrived - must reach the view model, not just a generic failure"
+        )
+        XCTAssertEqual(viewModel.mode, .editing, "the draft must stay open to type into, not reset to idle")
+
+        // A fresh segment must not carry the stale fact forward.
+        viewModel.updateCommittedText("Check the mooring line after the storm")
+        viewModel.done()
+        XCTAssertEqual(store.inklings.count, 1)
+    }
+
+    /// Some words came through before the recognizer died mid-segment - those
+    /// words must survive exactly like an interruption's do.
+    func testRecognitionFailureAfterPartialWordsKeepsThoseWords() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+        engine.transcript = "Swap the buoy battery"
+
+        engine.failRecognition()
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+
+        XCTAssertTrue(viewModel.recognitionFailed)
+        XCTAssertTrue(viewModel.showRecognitionFailureAlert)
+        XCTAssertTrue(
+            viewModel.recognitionFailedWithWordsHeard,
+            "words survived - the alert must reassure, not read as though they were lost"
+        )
+        XCTAssertEqual(viewModel.committedText, "Swap the buoy battery", "words heard before the failure must survive it")
+        XCTAssertEqual(viewModel.mode, .editing)
+    }
+
+    /// A fresh segment must clear the previous failure's facts together.
+    /// `recognitionFailed` and `noAudioDetected` already reset in
+    /// `startListening()`, but `recognitionFailedWithWordsHeard` stayed
+    /// stale until the next failure or reset - harmless only because the
+    /// alert recomputes it, an asymmetry a reader could mistake for
+    /// meaningful mid-segment state.
+    func testNewSegmentClearsAllStaleRecognitionFailureFacts() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+        engine.transcript = "Swap the buoy battery"
+        engine.failRecognition(reason: .noAudioDetected)
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+        XCTAssertTrue(viewModel.recognitionFailed)
+        XCTAssertTrue(viewModel.recognitionFailedWithWordsHeard)
+        XCTAssertTrue(viewModel.noAudioDetected)
+
+        // The mic key on the failed draft: dictation resumes, a new segment.
+        viewModel.resumeDictation()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+
+        XCTAssertFalse(viewModel.recognitionFailed)
+        XCTAssertFalse(
+            viewModel.recognitionFailedWithWordsHeard,
+            "the words-heard fact must reset with its sibling flags, not linger from the previous failure"
+        )
+        XCTAssertFalse(viewModel.noAudioDetected)
+    }
+
+    /// The non-negotiable behind the whole fix: after a recognition failure
+    /// with nothing heard, the recording preserved on disk may be the only
+    /// record of the utterance, so Done with nothing typed must not silently
+    /// take it. Only the explicit Discard action may. The gate is the
+    /// failure itself, not the file's existence - the real engine creates
+    /// the file at the start of every segment, so "a file exists" is true
+    /// for every voice-started draft and would turn every empty Done into a
+    /// no-op.
+    func testEmptyDoneAfterRecognitionFailureKeepsThePreservedAudio() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+
+        // The segment's audio file reached disk at segment start, exactly as
+        // the real engine writes it, before recognition died.
+        let audioURL = store.audioURL(for: viewModel.draftID)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audioURL.path))
+
+        engine.failRecognition()
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+
+        // The owner must dismiss the modal alert before Done is even
+        // tappable - the durable failure fact has to outlive that dismissal,
+        // or this protection would be dead code in the real app.
+        viewModel.showRecognitionFailureAlert = false
+
+        let draftID = viewModel.draftID
+        viewModel.done()
+
+        XCTAssertEqual(viewModel.mode, .editing, "Done with nothing typed must keep the draft open, not reset")
+        XCTAssertTrue(
+            viewModel.showEmptyDoneHint,
+            "the refusal must be visible - a Done that silently does nothing reads as broken"
+        )
+        XCTAssertEqual(viewModel.draftID, draftID, "the draft holding the recording must survive an empty Done")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: audioURL.path),
+            "the recording is the only record of what was said - Done must never silently delete it"
+        )
+        XCTAssertEqual(store.inklings.count, 0)
+
+        // Discarding stays the owner's own explicit choice - and still works.
+        viewModel.discard()
+        XCTAssertEqual(viewModel.mode, .idle)
+        XCTAssertFalse(
+            viewModel.showEmptyDoneHint,
+            "the hint must not keep pointing at a Discard that already happened"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: audioURL.path))
+    }
+
+    /// The hint belongs to the draft it refused to save. Recovering that
+    /// draft by typing and saving it inside the hint's display window must
+    /// clear the hint immediately, not leave it rendering underneath the
+    /// save confirmation toast.
+    func testEmptyDoneHintClearsWhenTheDraftIsRecoveredAndSaved() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+        engine.failRecognition()
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+
+        viewModel.done()
+        XCTAssertTrue(viewModel.showEmptyDoneHint)
+
+        viewModel.updateCommittedText("Check the mooring line after the storm")
+        viewModel.done()
+
+        XCTAssertEqual(store.inklings.count, 1)
+        XCTAssertTrue(viewModel.showConfirmation)
+        XCTAssertFalse(
+            viewModel.showEmptyDoneHint,
+            "a stale refusal must not linger under the save confirmation"
+        )
+    }
+
+    /// Without a recognition failure the recording is not the last record of
+    /// anything: leaving the editor empty and tapping Done is the owner
+    /// walking away, and it must still clear out to idle - taking the
+    /// segment's audio file with it - even though the real engine created
+    /// that file the moment the segment started.
+    func testEmptyDoneWithoutARecognitionFailureStillResetsToIdle() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+        let audioURL = store.audioURL(for: viewModel.draftID)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audioURL.path))
+
+        // Tap the well to edit, say nothing, type nothing, tap Done.
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+        viewModel.done()
+
+        XCTAssertEqual(viewModel.mode, .idle, "an empty draft the owner walked away from must not stay open")
+        XCTAssertFalse(viewModel.showEmptyDoneHint, "walking away worked - there is no refusal to explain")
+        XCTAssertFalse(viewModel.hasContent)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: audioURL.path),
+            "the abandoned draft's audio must not be orphaned on disk"
+        )
+        XCTAssertEqual(store.inklings.count, 0)
+    }
+
+    /// The hint's auto-dismiss used to be fire-and-forget: a second refused
+    /// empty Done inside the first's 2.2s window left the first timer
+    /// running, and it hid the retriggered showing early. Each retrigger
+    /// must restart the clock - the hint stays up past the point the first
+    /// timer would have fired, and still dismisses itself afterwards.
+    func testRetriggeredEmptyDoneHintIsNotHiddenEarlyByTheFirstTimer() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+        engine.failRecognition()
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+        viewModel.showRecognitionFailureAlert = false
+
+        viewModel.done()
+        XCTAssertTrue(viewModel.showEmptyDoneHint)
+
+        // A second refused Done inside the first hint's display window.
+        try await Task.sleep(for: .seconds(1.5))
+        viewModel.done()
+        XCTAssertTrue(viewModel.showEmptyDoneHint)
+
+        // Now past the first timer's 2.2s deadline but well inside the
+        // second's window (which runs to ~3.7s after the first Done).
+        try await Task.sleep(for: .seconds(1.2))
+        XCTAssertTrue(
+            viewModel.showEmptyDoneHint,
+            "the first Done's stale dismiss timer must not hide the retriggered hint early"
+        )
+
+        // The retriggered showing still dismisses itself.
+        try await waitUntil(timeout: 3) { !viewModel.showEmptyDoneHint }
+    }
+
+    /// Same idiom, same bug, for the save confirmation toast: saving a
+    /// second capture while the first save's toast is still up must not let
+    /// the first toast's timer hide the second one early.
+    func testRetriggeredConfirmationIsNotHiddenEarlyByTheFirstTimer() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+        engine.transcript = "Rig a solar charger for the buoy"
+        viewModel.done()
+        XCTAssertTrue(viewModel.showConfirmation)
+
+        // Save a second capture inside the first toast's display window.
+        try await Task.sleep(for: .seconds(1.5))
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+        engine.transcript = "Check the mooring line after the storm"
+        viewModel.done()
+        XCTAssertEqual(store.inklings.count, 2)
+        XCTAssertTrue(viewModel.showConfirmation)
+
+        // Past the first timer's deadline, inside the second's window.
+        try await Task.sleep(for: .seconds(1.2))
+        XCTAssertTrue(
+            viewModel.showConfirmation,
+            "the first save's stale dismiss timer must not hide the second save's toast early"
+        )
+
+        try await waitUntil(timeout: 3) { !viewModel.showConfirmation }
+    }
+
     private func makeStore() throws -> InklingStore {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CaptureViewModelTests-\(UUID().uuidString)", isDirectory: true)
@@ -219,10 +524,15 @@ private final class FakeCaptureEngine: CaptureEngine, @unchecked Sendable {
     var inputLevel: Float = 0
     private(set) var isCapturing = false
     private var onInterruption: (@Sendable () -> Void)?
+    private var onRecognitionFailure: (@Sendable (RecognitionFailureReason) -> Void)?
 
     func requestAuthorization() async -> Bool { true }
 
     func startCapturing(to fileURL: URL) throws {
+        // The real engine creates the audio file at segment start, before a
+        // single frame arrives - the fake must leave the same footprint or
+        // tests would exercise on-disk states production can never produce.
+        FileManager.default.createFile(atPath: fileURL.path, contents: Data())
         transcript = ""
         isCapturing = true
     }
@@ -233,6 +543,10 @@ private final class FakeCaptureEngine: CaptureEngine, @unchecked Sendable {
 
     func setInterruptionHandler(_ handler: @escaping @Sendable () -> Void) {
         onInterruption = handler
+    }
+
+    func setRecognitionFailureHandler(_ handler: @escaping @Sendable (RecognitionFailureReason) -> Void) {
+        onRecognitionFailure = handler
     }
 
     /// What the real engine's interruption observer does: stop for real,
@@ -246,5 +560,12 @@ private final class FakeCaptureEngine: CaptureEngine, @unchecked Sendable {
     /// first - nothing in the protocol promises it has.
     func interruptWithoutStopping() {
         onInterruption?()
+    }
+
+    /// What the real engine does on a recognizer error or a silence timeout:
+    /// stop for real, then tell the owner nothing came through.
+    func failRecognition(reason: RecognitionFailureReason = .recognitionFailed) {
+        stopCapturing()
+        onRecognitionFailure?(reason)
     }
 }
