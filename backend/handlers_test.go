@@ -47,6 +47,28 @@ func multipartRequest(t *testing.T, fields map[string]string, audio []byte) *htt
 	return req
 }
 
+func TestHealthEndpoint(t *testing.T) {
+	handler := (&Server{}).routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal health response: %v", err)
+	}
+	if body["status"] != "ok" {
+		t.Errorf("expected status %q, got %q", "ok", body["status"])
+	}
+	if body["version"] != Version {
+		t.Errorf("expected version %q, got %q", Version, body["version"])
+	}
+}
+
 func TestPostThenGetRoundTrip(t *testing.T) {
 	server := newTestServer(t)
 	handler := server.routes()

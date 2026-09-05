@@ -19,6 +19,7 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /inklings", s.handleCreate)
 	mux.HandleFunc("GET /inklings", s.handleList)
+	mux.HandleFunc("GET /health", s.handleHealth)
 	return mux
 }
 
@@ -106,6 +107,13 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		inklings = []Inkling{}
 	}
 	writeJSON(w, http.StatusOK, inklings)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "ok",
+		"version": Version,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
