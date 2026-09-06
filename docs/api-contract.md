@@ -86,11 +86,20 @@ it (the contract's own decade-ceiling measurement is 2.7MB / a few thousand file
 directory scan per request is fast enough not to need an index). A future lane building the real
 browse experience may want to add query params here; that's additive, not a breaking change.
 
-There's no dedicated health-check endpoint, and the sync engine never probes one. It learns
-reachability two ways: `NWPathMonitor` tells it when the device has a network path at all, and
-the outcome of each `POST /inklings` tells it whether the backend answered. A refused connection,
-a timeout, and a `5xx` are all treated identically to being offline - leave the inkling unsynced
-and try again on the next pass.
+### `GET /health` - liveness check
+
+Response: `200 OK`, JSON body:
+
+```json
+{ "status": "ok", "version": "0.1.0" }
+```
+
+`version` is the backend's own release version (`backend/version.go`), not tied to the storage
+format or the API contract version. This exists for operators/tooling; the sync engine never
+probes it. It learns reachability two ways instead: `NWPathMonitor` tells it when the device has
+a network path at all, and the outcome of each `POST /inklings` tells it whether the backend
+answered. A refused connection, a timeout, and a `5xx` are all treated identically to being
+offline - leave the inkling unsynced and try again on the next pass.
 
 ## Offline and retry semantics
 
