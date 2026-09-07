@@ -187,6 +187,100 @@ func TestPostRejectsIDsThatAreNotUUIDs(t *testing.T) {
 	}
 }
 
+func TestDeleteExistingIDRemovesIt(t *testing.T) {
+	server := newTestServer(t)
+	handler := server.routes()
+
+	id := "3f29f1de-6b3a-4b7e-9c9a-1a2b3c4d5e6f"
+	postRec := httptest.NewRecorder()
+	handler.ServeHTTP(postRec, multipartRequest(t, map[string]string{
+		"id":      id,
+		"created": "2026-07-31T08:11:00Z",
+		"updated": "2026-07-31T08:11:00Z",
+		"text":    "Rig a tide-powered charger for the buoy sensors.",
+	}, nil))
+	if postRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 on create, got %d: %s", postRec.Code, postRec.Body.String())
+	}
+
+	delRec := httptest.NewRecorder()
+	handler.ServeHTTP(delRec, httptest.NewRequest(http.MethodDelete, "/inklings/"+id, nil))
+	if delRec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", delRec.Code, delRec.Body.String())
+	}
+
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, httptest.NewRequest(http.MethodGet, "/inklings", nil))
+	var inklings []Inkling
+	if err := json.Unmarshal(listRec.Body.Bytes(), &inklings); err != nil {
+		t.Fatalf("unmarshal list: %v", err)
+	}
+	if len(inklings) != 0 {
+		t.Fatalf("expected 0 inklings after delete, got %d", len(inklings))
+	}
+}
+
+func TestDeleteUnknownIDReturns404(t *testing.T) {
+	server := newTestServer(t)
+	handler := server.routes()
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/inklings/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeleteRejectsNonUUIDID(t *testing.T) {
+	server := newTestServer(t)
+	handler := server.routes()
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/inklings/not-a-uuid", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeleteWithAudioRemovesBothFiles(t *testing.T) {
+	server := newTestServer(t)
+	handler := server.routes()
+
+	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	postRec := httptest.NewRecorder()
+	handler.ServeHTTP(postRec, multipartRequest(t, map[string]string{
+		"id":      id,
+		"created": "2026-07-31T08:11:00Z",
+		"updated": "2026-07-31T08:11:00Z",
+		"text":    "Idea with audio.",
+	}, []byte("fake-audio")))
+	if postRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 on create, got %d: %s", postRec.Code, postRec.Body.String())
+	}
+
+	audioPath := filepath.Join(server.store.dir, "idea-with-audio-aaaaaaaa.m4a")
+	if _, err := os.Stat(audioPath); err != nil {
+		t.Fatalf("expected audio file to exist before delete: %v", err)
+	}
+	mdPath := filepath.Join(server.store.dir, "idea-with-audio-aaaaaaaa.md")
+	if _, err := os.Stat(mdPath); err != nil {
+		t.Fatalf("expected markdown file to exist before delete: %v", err)
+	}
+
+	delRec := httptest.NewRecorder()
+	handler.ServeHTTP(delRec, httptest.NewRequest(http.MethodDelete, "/inklings/"+id, nil))
+	if delRec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", delRec.Code, delRec.Body.String())
+	}
+
+	if _, err := os.Stat(audioPath); !os.IsNotExist(err) {
+		t.Errorf("expected audio file removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(mdPath); !os.IsNotExist(err) {
+		t.Errorf("expected markdown file removed, stat err = %v", err)
+	}
+}
+
 func TestPostMissingFieldsRejected(t *testing.T) {
 	server := newTestServer(t)
 	handler := server.routes()

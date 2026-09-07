@@ -86,6 +86,21 @@ it (the contract's own decade-ceiling measurement is 2.7MB / a few thousand file
 directory scan per request is fast enough not to need an index). A future lane building the real
 browse experience may want to add query params here; that's additive, not a breaking change.
 
+### `DELETE /inklings/{id}` - delete an inkling
+
+`{id}` is the UUID from the inkling shape above, not the markdown filename - the backend finds
+the file the same way every other endpoint does, by scanning front matter for a matching `id`
+(see Identity, above).
+
+Removes the inkling's markdown file (and its audio sibling, if `hasAudio` was true) from storage
+and commits the removal. One commit per `DELETE`, same as writes.
+
+Response: `204 No Content` on success, empty body.
+
+Errors: `400` if `{id}` isn't UUID-shaped (same rejection as `POST`, since it also becomes part of
+a filename lookup). `404` if no inkling with this id exists. `5xx` for anything on the backend's
+side.
+
 ### `GET /health` - liveness check
 
 Response: `200 OK`, JSON body:

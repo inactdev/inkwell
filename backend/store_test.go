@@ -174,6 +174,113 @@ func TestUpsertConstrainsAudioExtensionToTheAllowlist(t *testing.T) {
 	}
 }
 
+func TestDeleteRemovesExistingInkling(t *testing.T) {
+	requireGit(t)
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	id := "3f29f1de-6b3a-4b7e-9c9a-1a2b3c4d5e6f"
+	ink := Inkling{ID: id, Created: "2026-07-31T08:11:00Z", Updated: "2026-07-31T08:11:00Z", Text: "Rig a tide-powered charger."}
+	if _, err := store.Upsert(ink, nil, ""); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	ok, err := store.Delete(id)
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if !ok {
+		t.Errorf("expected ok=true deleting an existing id")
+	}
+
+	entries, _ := os.ReadDir(dir)
+	if n := countMarkdown(entries); n != 0 {
+		t.Errorf("expected 0 markdown files after delete, got %d", n)
+	}
+
+	list, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 0 {
+		t.Errorf("expected empty list after delete, got %+v", list)
+	}
+
+	// Two commits: one for the create, one for the delete.
+	out, err := exec.Command("git", "-C", dir, "log", "--oneline").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	commitCount := len(strings.Split(strings.TrimSpace(string(out)), "\n"))
+	if commitCount != 2 {
+		t.Errorf("expected 2 commits, got %d:\n%s", commitCount, out)
+	}
+}
+
+func TestDeleteUnknownIDReturnsNotOK(t *testing.T) {
+	requireGit(t)
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	ok, err := store.Delete("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if ok {
+		t.Errorf("expected ok=false deleting an unknown id")
+	}
+}
+
+func TestDeleteRemovesAudioSibling(t *testing.T) {
+	requireGit(t)
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	ink := Inkling{ID: id, Created: "2026-07-31T08:11:00Z", Updated: "2026-07-31T08:11:00Z", Text: "Idea with audio."}
+	if _, err := store.Upsert(ink, []byte("fake audio bytes"), ".m4a"); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	audioPath := filepath.Join(dir, "idea-with-audio-aaaaaaaa.m4a")
+	if _, err := os.Stat(audioPath); err != nil {
+		t.Fatalf("expected audio file to exist before delete: %v", err)
+	}
+
+	ok, err := store.Delete(id)
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if !ok {
+		t.Errorf("expected ok=true deleting an existing id")
+	}
+
+	if _, err := os.Stat(audioPath); !os.IsNotExist(err) {
+		t.Errorf("expected audio sibling to be removed, stat err = %v", err)
+	}
+
+	entries, _ := os.ReadDir(dir)
+	if n := countMarkdown(entries); n != 0 {
+		t.Errorf("expected 0 markdown files after delete, got %d", n)
+	}
+	if len(entries) != 1 { // just the .git directory left
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("expected only .git left in storage dir, got %v", names)
+	}
+}
+
 func countMarkdown(entries []os.DirEntry) int {
 	n := 0
 	for _, e := range entries {
