@@ -1,0 +1,5 @@
+{
+  "check": "./check.sh",
+  "image": "golang:1.26",
+  "protectedPaths": ["check.sh"]
+}
