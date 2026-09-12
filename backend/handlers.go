@@ -19,6 +19,7 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /inklings", s.handleCreate)
 	mux.HandleFunc("GET /inklings", s.handleList)
+	mux.HandleFunc("DELETE /inklings/{id}", s.handleDelete)
 	mux.HandleFunc("GET /health", s.handleHealth)
 	return mux
 }
@@ -107,6 +108,27 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		inklings = []Inkling{}
 	}
 	writeJSON(w, http.StatusOK, inklings)
+}
+
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if !isValidID(id) {
+		writeError(w, http.StatusBadRequest, "id must be a UUID")
+		return
+	}
+
+	ok, err := s.store.Delete(id)
+	if err != nil {
+		log.Printf("delete %s: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "could not delete inkling")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "no inkling with this id")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

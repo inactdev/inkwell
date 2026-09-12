@@ -165,6 +165,46 @@ func (s *Store) Upsert(ink Inkling, audio []byte, audioExt string) (created bool
 	return !exists, nil
 }
 
+// Delete removes an inkling's markdown (and audio sibling, if present) and
+// commits the removal. Returns ok=false if no inkling with this id exists -
+// findByID is the same front-matter scan used everywhere else, since the
+// filename is never a lookup key (see docs/api-contract.md).
+func (s *Store) Delete(id string) (ok bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	base, _, exists := s.findByID(id)
+	if !exists {
+		return false, nil
+	}
+
+	mdName := base + ".md"
+	if err := os.Remove(filepath.Join(s.dir, mdName)); err != nil {
+		return false, fmt.Errorf("remove markdown: %w", err)
+	}
+	if err := s.git("add", mdName); err != nil {
+		return false, err
+	}
+
+	if audioName := s.findAudioFile(base); audioName != "" {
+		if err := os.Remove(filepath.Join(s.dir, audioName)); err != nil {
+			return false, fmt.Errorf("remove audio: %w", err)
+		}
+		if err := s.git("add", audioName); err != nil {
+			return false, err
+		}
+	}
+
+	if s.hasStagedChanges() {
+		msg := fmt.Sprintf("delete inkling: %s", base)
+		if err := s.git("commit", "-m", msg); err != nil {
+			return false, err
+		}
+	}
+
+	return true, nil
+}
+
 // List returns every inkling on disk, newest created first.
 func (s *Store) List() ([]Inkling, error) {
 	s.mu.Lock()
