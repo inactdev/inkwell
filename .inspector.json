@@ -1,5 +1,6 @@
 {
   "check": "./check.sh",
   "image": "golang:1.26",
-  "protectedPaths": ["check.sh"]
+  "protectedPathsNote": "Temporary test protection - remove when https://github.com/inactdev/inspector/issues/7 lands; tracked by https://github.com/inactdev/fabrica/issues/96.",
+  "protectedPaths": ["check.sh", "*_test.*", "*Tests/*"]
 }
