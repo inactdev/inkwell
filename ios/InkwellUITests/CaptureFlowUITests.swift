@@ -82,15 +82,33 @@ final class CaptureFlowUITests: XCTestCase {
         dismissSystemAlertIfPresent(app)
         dismissSystemAlertIfPresent(app) // speech recognition, then microphone
 
-        attachScreenshot(app, name: "01-idle")
-
         let inkwell = app.otherElements["inkwell"]
         XCTAssertTrue(inkwell.waitForExistence(timeout: 5))
 
         // Counted before and after rather than asserted as "exactly one", so
         // the duplicate check at the end means the same thing on a simulator
-        // that already has captures on disk from an earlier run.
+        // that already has captures on disk from an earlier run. Counted on
+        // its own, throwaway launch and closed out immediately - on
+        // purpose, before the real capture below gets its own fresh one.
+        // Sharing a single launch between "browse the list" and "capture a
+        // sentence" used to race the silence watchdog: since the app is
+        // voice-first, listening auto-starts the instant the capture screen
+        // appears, so the pause spent opening the list sheet, counting, and
+        // closing it again could by itself run long enough to end that
+        // segment - leaving no "transcript" element for the tap further
+        // below to find. XCUIApplication().launch() terminates and restarts
+        // the app cleanly, so relaunching afterward gives the real capture
+        // flow its own untouched listening segment, with the transcript
+        // tapped the instant it appears rather than after a detour.
         let rowsBefore = countCaptureRows(app)
+
+        app.launch()
+        dismissSystemAlertIfPresent(app)
+        dismissSystemAlertIfPresent(app) // speech recognition, then microphone
+
+        attachScreenshot(app, name: "01-idle")
+
+        XCTAssertTrue(inkwell.waitForExistence(timeout: 5))
 
         let transcript = app.staticTexts["transcript"]
         XCTAssertTrue(transcript.waitForExistence(timeout: 5), "capture must already be listening on launch, with no tap required")
