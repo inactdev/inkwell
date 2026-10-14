@@ -119,6 +119,11 @@ struct CaptureView: View {
         } message: {
             Text("Turn on Microphone and Speech Recognition access in Settings to capture by speaking.")
         }
+        // Voice-first: the well starts listening the moment this screen
+        // appears, with no initial tap required. Fires once per launch -
+        // this view stays resident behind the list's sheet rather than being
+        // recreated, so onAppear never fires a second time mid-session.
+        .onAppear { viewModel.beginListeningOnLaunch() }
     }
 
     private var header: some View {

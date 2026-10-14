@@ -127,6 +127,17 @@ final class CaptureViewModel {
         showRecognitionFailureAlert = true
     }
 
+    /// The app is voice-first: called once, when the capture screen first
+    /// appears, so listening begins the moment the app opens rather than
+    /// waiting for an initial tap the owner has no reason to make if the
+    /// well already looks like it's running. Guarded on `.idle` for the same
+    /// reason `startListening()` itself is - a re-appearance must never steal
+    /// an in-progress or already-edited draft back into listening.
+    func beginListeningOnLaunch() {
+        guard mode == .idle else { return }
+        startListening()
+    }
+
     /// Tapping the well: start listening from idle/editing, or - while
     /// already listening - freeze the transcript and hand over to the
     /// keyboard, matching "tapping the words gives you the keyboard to edit."
