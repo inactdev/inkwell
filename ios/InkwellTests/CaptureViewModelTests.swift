@@ -23,6 +23,48 @@ import XCTest
 @MainActor
 final class CaptureViewModelTests: XCTestCase {
 
+    /// The bug this task exists to fix: the app is voice-first, so listening
+    /// must begin the moment the capture screen appears - not wait for an
+    /// initial tap the owner has no reason to make if the well already looks
+    /// like it's running. Drives the full `beginListeningOnLaunch` ->
+    /// `tapInkwell` (stop and edit) -> `done` sequence a real launch-then-speak
+    /// session produces, with no tap starting the segment.
+    func testBeginListeningOnLaunchStartsCapturingWithoutATap() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        XCTAssertFalse(viewModel.isListening, "sanity: a fresh draft starts idle")
+        viewModel.beginListeningOnLaunch()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+
+        engine.transcript = "Patch the leak in the dinghy before the next swell"
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { !viewModel.isListening }
+        viewModel.done()
+
+        XCTAssertEqual(store.inklings.count, 1, "the sentence spoken right after launch must land as an inkling")
+        XCTAssertEqual(store.inklings.first?.text, "Patch the leak in the dinghy before the next swell")
+    }
+
+    /// Guards against a future change (e.g. a view re-appearing after a
+    /// sheet dismissal) calling this a second time and stealing an
+    /// in-progress or already-edited draft back into listening.
+    func testBeginListeningOnLaunchIsANoOpWhenNotIdle() async throws {
+        let store = try makeStore()
+        let engine = FakeCaptureEngine()
+        let viewModel = CaptureViewModel(store: store, engine: engine)
+
+        viewModel.tapInkwell()
+        try await waitUntil(timeout: 2) { viewModel.isListening }
+        viewModel.beginEditing()
+        XCTAssertEqual(viewModel.mode, .editing)
+
+        viewModel.beginListeningOnLaunch()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(viewModel.mode, .editing, "must not steal an in-progress edit back into listening")
+    }
+
     func testCommittedTextIsNotReReadAsLiveAfterCommit() async throws {
         let store = try makeStore()
         let engine = FakeCaptureEngine()

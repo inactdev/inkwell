@@ -33,10 +33,12 @@ final class LongDictationLayoutUITests: XCTestCase {
         app.launchEnvironment["INKWELL_SILENCE_TIMEOUT_OVERRIDE"] = "60"
         app.launch()
 
+        // Requested automatically on launch now that the app is voice-first -
+        // no tap needed first.
+        dismissSystemAlertIfPresent(app)
+
         let inkwell = app.otherElements["inkwell"]
         XCTAssertTrue(inkwell.waitForExistence(timeout: 5))
-        inkwell.tap()
-        dismissSystemAlertIfPresent(app)
 
         let transcript = app.staticTexts["transcript"]
         XCTAssertTrue(transcript.waitForExistence(timeout: 5))

@@ -21,11 +21,13 @@ final class VoiceCaptureFailureUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        let inkwell = app.otherElements["inkwell"]
-        XCTAssertTrue(inkwell.waitForExistence(timeout: 5))
-        inkwell.tap()
+        // Requested automatically on launch now that the app is voice-first -
+        // no tap needed first.
         dismissSystemAlertIfPresent(app)
         dismissSystemAlertIfPresent(app) // speech recognition, then microphone
+
+        let inkwell = app.otherElements["inkwell"]
+        XCTAssertTrue(inkwell.waitForExistence(timeout: 5))
 
         let transcript = app.staticTexts["transcript"]
         XCTAssertTrue(transcript.waitForExistence(timeout: 5), "never reached listening mode")
