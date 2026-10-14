@@ -23,12 +23,17 @@ struct ListView: View {
                             Spacer()
                         }
                     }
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .listRowBackground(InkwellPalette.parchment)
+                    .listRowSeparator(.hidden)
                 }
-                ForEach(store.inklings) { inkling in
-                    row(for: inkling)
+                ForEach(Array(store.inklings.enumerated()), id: \.element.id) { index, inkling in
+                    row(for: inkling, tinted: index.isMultiple(of: 2))
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(InkwellPalette.parchment)
             .overlay {
                 if store.inklings.isEmpty {
                     ContentUnavailableView(
@@ -48,29 +53,39 @@ struct ListView: View {
         }
     }
 
-    private func row(for inkling: Inkling) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(inkling.title)
-                    .font(.system(.body, design: .serif))
-                    .foregroundStyle(InkwellPalette.ink)
-                Text(inkling.createdAt, format: .dateTime.month(.abbreviated).day().hour().minute())
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            if !inkling.isSynced {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(InkwellPalette.amber)
-                        .frame(width: 6, height: 6)
-                    Text("not yet synced")
-                        .font(.caption2)
-                        .foregroundStyle(InkwellPalette.amber)
+    private func row(for inkling: Inkling, tinted: Bool) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(inkling.title)
+                        .font(.system(.body, design: .serif))
+                        .foregroundStyle(InkwellPalette.ink)
+                    Text(inkling.createdAt, format: .dateTime.month(.abbreviated).day().hour().minute())
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if !inkling.isSynced {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(InkwellPalette.amber)
+                            .frame(width: 6, height: 6)
+                        Text("not yet synced")
+                            .font(.caption2)
+                            .foregroundStyle(InkwellPalette.amber)
+                    }
                 }
             }
+            .padding(.vertical, 8)
+            .padding(.horizontal, 16)
+            Rectangle()
+                .fill(InkwellPalette.ink.opacity(0.12))
+                .frame(height: 1)
+                .padding(.leading, 16)
         }
-        .padding(.vertical, 4)
+        .listRowInsets(EdgeInsets())
+        .listRowBackground(tinted ? InkwellPalette.parchmentDeep : InkwellPalette.parchment)
+        .listRowSeparator(.hidden)
     }
 }
 
